@@ -12,8 +12,11 @@ touch controls and troubleshooting.
 * `index.html`, `hk.html`, `hollow knight.html` — forward to `ipad.html`
 * `legacy/` — the previous versions, unchanged
 * `hk-stream.js`, `hk-writer.js` — chunk loader: OPFS streaming + caching
+* `hk-save-codec.js` — save-file codec: import accepts `.dat`/`.dat.html`
+  editor downloads (hollowedit.com etc.), plain JSON or base64 saves
 * `tools/serve.mjs` — local server: `node tools/serve.mjs 8080`
 * `tools/test-hk-stream.mjs` — test suite: `node tools/test-hk-stream.mjs`
+* `tools/test-save-import.mjs` — save import/codec tests: `node tools/test-save-import.mjs`
 
 Notes from the original port:
 
