@@ -107,7 +107,23 @@ WebGL build expects:
 
 A Bluetooth gamepad or keyboard connected to the iPad also works.
 
-## 6. Troubleshooting
+## 6. Save editors (.dat / .dat.html)
+
+Saves live in the game's native format (`user1.dat` … `user4.dat`), so online
+editors such as [hollowedit.com](https://hollowedit.com/) work with them:
+
+1. **Export** — Menu ▸ *Export .dat slot* downloads `userN.dat`.
+2. **Edit** — load that file in the editor. iPad Safari renames editor
+   downloads to `userN.dat.html` (it appends the extension of the MIME type the
+   editor serves); that file is used as-is in the next step.
+3. **Import** — Menu ▸ *Import save* accepts the `.dat.html` (or `.dat`), the
+   page's own `hk-save.json` export, and even plain/base64 save text from other
+   editors. The importer validates the save (it must decrypt to real save JSON)
+   before anything is written, writes it to the slot that matches the file name
+   (`user3.dat.html` → slot 3, otherwise slot 1), and leaves other slots alone.
+   Reload the page afterwards.
+
+## 7. Troubleshooting
 
 | Symptom | What to try |
 | --- | --- |
@@ -121,13 +137,14 @@ A Bluetooth gamepad or keyboard connected to the iPad also works.
 The **Menu** button (top right) shows storage/capability details and a log;
 "Copy diagnostics" puts it on the clipboard if you want to report a problem.
 
-## 7. Working on it
+## 8. Working on it
 
 ```bash
 node tools/test-hk-stream.mjs          # full: assembles the real 884 MB file
                                        # and checks it byte-for-byte (sha256)
 node tools/test-hk-stream.mjs --quick   # same suite with only the wasm chunks
 node tools/test-ipad-page.mjs           # DOM tests for pad auto-hide / key ownership
+node tools/test-save-import.mjs         # save codec + .dat.html import/export tests
 node tools/serve.mjs 8080               # static server with Range + wasm MIME
 ```
 
@@ -136,7 +153,8 @@ network requests), resume after an interrupted download, retries after broken
 parts, the RAM fallback, the worker message protocol, and that the part list in
 `ipad.html` still matches the files in `Build/`. The iPad page suite checks
 physical-input auto-hide, touch taps, Esc / long-press restore, gamepad input,
-and keyboard/touch key ownership.
+and keyboard/touch key ownership. The save import suite checks the AES save
+codec against reference vectors and the `.dat.html` import flow in jsdom.
 
 ### Files added
 
@@ -145,8 +163,11 @@ and keyboard/touch key ownership.
 | `ipad.html` | The game page (UI, Unity config, touch pad, saves, diagnostics) |
 | `hk-stream.js` | Chunk → OPFS pipeline with resume/caching |
 | `hk-writer.js` | Worker that owns the OPFS sync access handle |
+| `hk-save-codec.js` | Save-file codec: reads/writes native `userN.dat` containers |
 | `tools/test-hk-stream.mjs` | Node test suite for the streaming loader |
 | `tools/test-ipad-page.mjs` | DOM tests for the touch pad and input handling |
+| `tools/test-save-import.mjs` | Node test suite for the save codec + import/export |
+| `tools/fixtures/` | Reference save files/vectors for the codec tests |
 | `tools/serve.mjs` | Local static server (Range requests, correct MIME) |
 | `IPAD.md` | This document |
 

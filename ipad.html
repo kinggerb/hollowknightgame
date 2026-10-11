@@ -169,7 +169,7 @@
 </div>
 
 <!-- ================= diagnostics panel ================= -->
-<input type="file" id="saveFile" accept=".json,.txt,.dat,application/json" class="hidden">
+<input type="file" id="saveFile" accept=".json,.txt,.dat,.dat.html,application/json,application/octet-stream" class="hidden">
 
 <div id="panel" class="hidden">
   <h3>Storage</h3>
@@ -180,6 +180,7 @@
     <button id="queueBtn">Render quality: 100%</button>
     <button id="compatBtn">Compatibility mode: off</button>
     <button id="exportBtn">Export save</button>
+    <button id="exportDatBtn">Export .dat slot</button>
     <button id="importBtn">Import save</button>
     <button id="clearBtn">Clear cached game data</button>
     <button id="copyBtn">Copy diagnostics</button>
@@ -190,6 +191,7 @@
 </div>
 
 <script src="hk-stream.js"></script>
+<script src="hk-save-codec.js"></script>
 <script>
 /* ============================================================================
  * Hollow Knight — iPad/mobile front-end
@@ -512,6 +514,7 @@
   });
   $('reloadBtn').addEventListener('click', function () { location.reload(); });
   $('exportBtn').addEventListener('click', function () { exportSave(); });
+  $('exportDatBtn').addEventListener('click', function () { exportDatSlot(); });
   $('importBtn').addEventListener('click', function () { $('saveFile').click(); });
   $('saveFile').addEventListener('change', function (ev) {
     var file = ev.target.files && ev.target.files[0];
@@ -875,6 +878,12 @@
 
   /* ---------------------------------------------------------------- *
    * Saves: export / import the game's IndexedDB (IDBFS) data
+   *
+   * Import understands:
+   *   - hk-save.json, this page's own export (IDBFS entries as JSON)
+   *   - native save files: userN.dat and editor downloads like
+   *     hollowedit.com's userN.dat.html, plain save JSON, or base64 —
+   *     HKSaveCodec (hk-save-codec.js) finds the save in all of them
    * ---------------------------------------------------------------- */
   function openDb(name) {
     return new Promise(function (res, rej) {
@@ -929,37 +938,127 @@
     var reader = new FileReader();
     reader.onerror = function () { toast('Could not read that file'); };
     reader.onload = function () {
-      var entries;
-      try { entries = JSON.parse(reader.result); } catch (e) { toast('Not a valid save file'); return; }
-      var req = indexedDB.open('/idbfs');
-      req.onsuccess = function () {
-        var db = req.result;
-        if (!db.objectStoreNames.contains('FILE_DATA')) { toast('Start the game once before importing'); return; }
-        var tx = db.transaction('FILE_DATA', 'readwrite');
-        var store = tx.objectStore('FILE_DATA');
-        store.getAllKeys().onsuccess = function (ev) {
-          var keys = ev.target.result;
-          if (!keys.length) { toast('Start the game once before importing'); return; }
-          var currentHash = String(keys[0]).split('/')[2];
-          keys.forEach(function (k) { if (String(k).indexOf(currentHash) === -1) store.delete(k); });
-          entries.forEach(function (entry) {
-            var parts = String(entry.key).split('/');
-            parts[2] = currentHash;
-            var val = entry.value, contents = val.contents;
-            if (contents && typeof contents === 'object' && !(contents instanceof Int8Array)) {
-              var idxs = Object.keys(contents).map(Number).sort(function (a, b) { return a - b; });
-              var arr = new Int8Array(idxs.length);
-              idxs.forEach(function (i) { arr[i] = contents[i]; });
-              contents = arr;
-            }
-            store.put({ timestamp: new Date(val.timestamp), mode: val.mode, contents: contents }, parts.join('/'));
-          });
-          tx.oncomplete = function () { toast('Save imported — reload the page'); };
-          tx.onerror = function () { toast('Import failed'); };
+      var bytes = new Uint8Array(reader.result);
+      // Sniff the first non-BOM/whitespace byte: '[' is this page's own JSON
+      // export, everything else is treated as a save file itself — a native
+      // .dat, an editor download like hollowedit.com's user1.dat.html
+      // (Safari appends ".html" to those), or a plain-text save.
+      var q = 0;
+      if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) q = 3;
+      while (q < bytes.length && (bytes[q] === 32 || bytes[q] === 9 || bytes[q] === 10 || bytes[q] === 13)) q++;
+      if (bytes[q] === 0x5b /* [ */) { importIdbfsJson(bytes, q); return; }
+      if (typeof HKSaveCodec === 'undefined') { toast('Save codec failed to load — reload the page'); return; }
+      var json;
+      try { json = HKSaveCodec.findSave(bytes); } catch (e) { json = null; }
+      if (json === null) {
+        toast('Not a Hollow Knight save — use a .dat / .dat.html from a save editor or hk-save.json from this page');
+        return;
+      }
+      var dat;
+      try { dat = HKSaveCodec.encodeDat(json); } catch (e) { toast('Could not package that save for the game'); return; }
+      importDatBytes(file, dat);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  /* The game's own save slot format (user1.dat … user4.dat): the bytes are
+   * written straight into the IDBFS entry the game reads on boot. The slot
+   * is taken from the file name (user3.dat.html → slot 3), defaulting to 1. */
+  function importDatBytes(file, dat) {
+    var slot = slotFromName(file && file.name);
+    var req = indexedDB.open('/idbfs');
+    req.onsuccess = function () {
+      var db = req.result;
+      if (!db.objectStoreNames.contains('FILE_DATA')) { toast('Start the game once before importing'); return; }
+      var tx = db.transaction('FILE_DATA', 'readwrite');
+      var store = tx.objectStore('FILE_DATA');
+      store.getAllKeys().onsuccess = function (ev) {
+        var keys = ev.target.result;
+        if (!keys.length) { toast('Start the game once before importing'); return; }
+        var currentHash = String(keys[0]).split('/')[2];
+        store.put(
+          { timestamp: new Date(), mode: 33206, contents: dat },
+          '/idbfs/' + currentHash + '/user' + slot + '.dat'
+        );
+      };
+      tx.oncomplete = function () { toast('Save imported into slot ' + slot + ' — reload the page'); };
+      tx.onerror = function () { toast('Import failed'); };
+    };
+    req.onerror = function () { toast('Could not read the save database'); };
+  }
+  function slotFromName(name) {
+    var m = /user\s*(\d+)/i.exec(String(name || ''));
+    var slot = m ? parseInt(m[1], 10) : 1;
+    if (!(slot >= 1 && slot <= 4)) slot = 1;
+    return slot;
+  }
+  /* This page's export format: a JSON array of IDBFS FILE_DATA entries. */
+  function importIdbfsJson(bytes, offset) {
+    var entries;
+    try { entries = JSON.parse(new TextDecoder('utf-8').decode(offset ? bytes.subarray(offset) : bytes)); }
+    catch (e) { toast('Not a valid save file'); return; }
+    if (!Array.isArray(entries)) { toast('Not a valid save file'); return; }
+    var req = indexedDB.open('/idbfs');
+    req.onsuccess = function () {
+      var db = req.result;
+      if (!db.objectStoreNames.contains('FILE_DATA')) { toast('Start the game once before importing'); return; }
+      var tx = db.transaction('FILE_DATA', 'readwrite');
+      var store = tx.objectStore('FILE_DATA');
+      store.getAllKeys().onsuccess = function (ev) {
+        var keys = ev.target.result;
+        if (!keys.length) { toast('Start the game once before importing'); return; }
+        var currentHash = String(keys[0]).split('/')[2];
+        keys.forEach(function (k) { if (String(k).indexOf(currentHash) === -1) store.delete(k); });
+        entries.forEach(function (entry) {
+          var parts = String(entry.key).split('/');
+          parts[2] = currentHash;
+          var val = entry.value, contents = val.contents;
+          if (contents && typeof contents === 'object' && !(contents instanceof Int8Array)) {
+            var idxs = Object.keys(contents).map(Number).sort(function (a, b) { return a - b; });
+            var arr = new Int8Array(idxs.length);
+            idxs.forEach(function (i) { arr[i] = contents[i]; });
+            contents = arr;
+          }
+          store.put({ timestamp: new Date(val.timestamp), mode: val.mode, contents: contents }, parts.join('/'));
+        });
+        tx.oncomplete = function () { toast('Save imported — reload the page'); };
+        tx.onerror = function () { toast('Import failed'); };
+      };
+    };
+  }
+  /* Hand a single slot to a save editor (hollowedit.com etc.) as userN.dat.
+   * Editors can only open .dat files, not this page's hk-save.json. */
+  function exportDatSlot() {
+    if (typeof indexedDB === 'undefined') {
+      toast('Saving is not available in this browser/private window');
+      return;
+    }
+    var slot = parseInt(prompt('Export which slot as .dat? (1-4)', '1'), 10);
+    if (!(slot >= 1 && slot <= 4)) return;
+    var req = indexedDB.open('/idbfs');
+    req.onsuccess = function () {
+      var db = req.result;
+      if (!db.objectStoreNames.contains('FILE_DATA')) { toast('No save data yet'); return; }
+      var tx = db.transaction('FILE_DATA', 'readonly');
+      var store = tx.objectStore('FILE_DATA');
+      store.getAllKeys().onsuccess = function (ev) {
+        var keys = ev.target.result;
+        if (!keys.length) { toast('No save data yet'); return; }
+        var currentHash = String(keys[0]).split('/')[2];
+        store.get('/idbfs/' + currentHash + '/user' + slot + '.dat').onsuccess = function (ev2) {
+          var entry = ev2.target.result;
+          if (!entry || !entry.contents || !entry.contents.length) { toast('Slot ' + slot + ' is empty'); return; }
+          var blob = new Blob([entry.contents], { type: 'application/octet-stream' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'user' + slot + '.dat';
+          a.click();
+          setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+          toast('Slot ' + slot + ' exported as user' + slot + '.dat');
         };
       };
     };
-    reader.readAsText(file);
+    req.onerror = function () { toast('Could not read the save database'); };
   }
 
   /* ---------------------------------------------------------------- *
