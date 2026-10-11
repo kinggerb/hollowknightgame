@@ -84,8 +84,13 @@ first: as a home-screen web app Safari does not evict the site's storage after
 
 ## 5. Touch controls
 
-The on-screen pad appears on touch devices (toggle it in the menu). It sends the
-default Hollow Knight keyboard bindings, which is what the WebGL build expects:
+The on-screen pad appears on touch devices (toggle it in the menu). Using a
+physical keyboard, mouse, or gamepad hides the pad so it does not cover the game;
+touchscreen taps do not hide it. Press **Esc** or long-press the screen to bring
+an auto-hidden pad back. Keyboard and touch-pad holds are combined, so releasing
+one input source cannot release a key that the other source is still holding.
+The pad sends the default Hollow Knight keyboard bindings, which is what the
+WebGL build expects:
 
 | Button | Key |
 | --- | --- |
@@ -122,13 +127,16 @@ The **Menu** button (top right) shows storage/capability details and a log;
 node tools/test-hk-stream.mjs          # full: assembles the real 884 MB file
                                        # and checks it byte-for-byte (sha256)
 node tools/test-hk-stream.mjs --quick   # same suite with only the wasm chunks
+node tools/test-ipad-page.mjs           # DOM tests for pad auto-hide / key ownership
 node tools/serve.mjs 8080               # static server with Range + wasm MIME
 ```
 
-The test suite covers: byte-exact assembly, OPFS cache reuse (zero network
-requests), resume after an interrupted download, retries after broken parts,
-the RAM fallback, the worker message protocol, and that the part list in
-`ipad.html` still matches the files in `Build/`.
+The streaming test suite covers: byte-exact assembly, OPFS cache reuse (zero
+network requests), resume after an interrupted download, retries after broken
+parts, the RAM fallback, the worker message protocol, and that the part list in
+`ipad.html` still matches the files in `Build/`. The iPad page suite checks
+physical-input auto-hide, touch taps, Esc / long-press restore, gamepad input,
+and keyboard/touch key ownership.
 
 ### Files added
 
@@ -137,7 +145,8 @@ the RAM fallback, the worker message protocol, and that the part list in
 | `ipad.html` | The game page (UI, Unity config, touch pad, saves, diagnostics) |
 | `hk-stream.js` | Chunk → OPFS pipeline with resume/caching |
 | `hk-writer.js` | Worker that owns the OPFS sync access handle |
-| `tools/test-hk-stream.mjs` | Node test suite for the above |
+| `tools/test-hk-stream.mjs` | Node test suite for the streaming loader |
+| `tools/test-ipad-page.mjs` | DOM tests for the touch pad and input handling |
 | `tools/serve.mjs` | Local static server (Range requests, correct MIME) |
 | `IPAD.md` | This document |
 
