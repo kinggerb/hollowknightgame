@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- iPad / iPhone friendly viewport: no pinch zoom, no rubber-band, notch safe -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hollow Knight">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="format-detection" content="telephone=no">
+<title>Hollow Knight — iPad</title>
+<style>
+  :root{
+    --pad-btn: rgba(255,255,255,.16);
+    --pad-btn-active: rgba(255,255,255,.42);
+    --panel: rgba(10,10,14,.92);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{
+    width:100%;height:100%;background:#000;color:#e8e8ef;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+    overscroll-behavior:none;touch-action:none;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+  }
+  #canvas-wrap{position:fixed;inset:0;display:grid;place-items:center;overflow:hidden;background:#000}
+  #unity-canvas{
+    display:block;background:#000;touch-action:none;outline:none;
+    width:100%;height:100%;transform-origin:50% 50%;
+  }
+
+  /* ---------- loading / start screen ---------- */
+  #screen{
+    position:fixed;inset:0;background:radial-gradient(ellipse at 50% 30%,#14141c 0%,#05050a 70%);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+    padding:max(20px,env(safe-area-inset-top)) 20px max(20px,env(safe-area-inset-bottom));
+    text-align:center;z-index:40;
+  }
+  #screen h1{font-size:clamp(26px,6vw,44px);font-weight:300;letter-spacing:.14em;text-transform:uppercase}
+  #screen h1 small{display:block;font-size:12px;letter-spacing:.3em;opacity:.55;margin-top:8px}
+  #status{font-size:clamp(13px,3.4vw,17px);opacity:.9;min-height:1.4em;max-width:48em}
+  #sub{font-size:clamp(11px,2.8vw,13px);opacity:.6;max-width:44em;line-height:1.5}
+  #bar{width:min(78vw,620px);height:10px;border-radius:6px;background:rgba(255,255,255,.12);overflow:hidden}
+  #bar > i{display:block;height:100%;width:0%;background:linear-gradient(90deg,#8ec5ff,#b98cff);transition:width .2s}
+  #pct{font-variant-numeric:tabular-nums;font-size:12px;opacity:.75}
+  button.main{
+    appearance:none;border:1px solid rgba(255,255,255,.3);background:rgba(255,255,255,.08);
+    color:#fff;font-size:clamp(15px,4vw,18px);letter-spacing:.08em;padding:14px 34px;border-radius:12px;
+    cursor:pointer;text-transform:uppercase;
+  }
+  button.main:active{background:rgba(255,255,255,.22)}
+  #notes{font-size:11px;opacity:.5;line-height:1.6;max-width:40em}
+  .warn{color:#ffd479}
+  .err{color:#ff9d9d;white-space:pre-wrap;word-break:break-word;max-width:44em;text-align:left;font-size:12px}
+  .hidden{display:none !important}
+
+  /* ---------- top-right chips ---------- */
+  #chips{position:fixed;top:calc(8px + env(safe-area-inset-top));right:calc(8px + env(safe-area-inset-right));display:flex;gap:6px;z-index:30}
+  .chip{
+    background:rgba(20,20,26,.72);border:1px solid rgba(255,255,255,.16);color:#fff;border-radius:8px;
+    font-size:12px;padding:6px 10px;cursor:pointer;backdrop-filter:blur(6px);font-variant-numeric:tabular-nums
+  }
+  .chip:active{background:rgba(255,255,255,.2)}
+  #fps{min-width:64px;text-align:center}
+
+  /* ---------- diagnostics panel ---------- */
+  #panel{
+    position:fixed;top:calc(48px + env(safe-area-inset-top));right:calc(8px + env(safe-area-inset-right));
+    width:min(92vw,420px);max-height:min(70vh,560px);overflow:auto;background:var(--panel);
+    border:1px solid rgba(255,255,255,.18);border-radius:12px;padding:12px;z-index:31;font-size:12px;line-height:1.5
+  }
+  #panel h3{font-size:11px;letter-spacing:.16em;text-transform:uppercase;opacity:.6;margin:10px 0 4px}
+  #panel h3:first-child{margin-top:0}
+  #panel .row{display:flex;justify-content:space-between;gap:8px;padding:2px 0;border-bottom:1px dotted rgba(255,255,255,.08)}
+  #panel .row span:last-child{opacity:.85;text-align:right;word-break:break-all}
+  #panel button{
+    appearance:none;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);color:#fff;
+    border-radius:8px;padding:7px 10px;font-size:12px;margin:4px 4px 0 0;cursor:pointer
+  }
+  #panel button:active{background:rgba(255,255,255,.22)}
+  #logbox{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;white-space:pre-wrap;word-break:break-word;
+    max-height:170px;overflow:auto;background:rgba(0,0,0,.35);border-radius:8px;padding:8px;margin-top:6px;opacity:.9}
+
+  /* ---------- toast + warn banner ---------- */
+  #toast{position:fixed;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);
+    background:rgba(20,20,26,.92);border:1px solid rgba(255,255,255,.2);border-radius:10px;padding:10px 16px;font-size:13px;
+    z-index:60;opacity:0;transition:opacity .25s;pointer-events:none;max-width:88vw;text-align:center}
+  #toast.show{opacity:1}
+  #bgwarn{position:fixed;top:0;left:0;right:0;background:#5a2b00;color:#ffd479;font-size:12px;padding:6px;text-align:center;z-index:70}
+
+  /* ---------- touch controls ---------- */
+  #pad{position:fixed;inset:0;z-index:25;pointer-events:none;display:none}
+  #pad.on{display:block}
+  #pad .side{position:absolute;bottom:calc(14px + env(safe-area-inset-bottom));display:flex;gap:10px;pointer-events:auto}
+  #pad .left{left:calc(14px + env(safe-area-inset-left))}
+  #pad .right{right:calc(14px + env(safe-area-inset-right))}
+  #pad .cluster{display:grid;gap:10px}
+  #pad .dpad{grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr)}
+  #pad button{
+    appearance:none;border:1px solid rgba(255,255,255,.28);background:var(--pad-btn);color:#fff;
+    width:74px;height:74px;border-radius:50%;font-size:15px;font-weight:600;letter-spacing:.02em;
+    display:grid;place-items:center;backdrop-filter:blur(4px);touch-action:none;cursor:pointer
+  }
+  #pad button.small{width:62px;height:62px;font-size:12px}
+  #pad button.held{background:var(--pad-btn-active)}
+  #pad .dpad button{border-radius:14px;width:64px;height:64px}
+  @media (max-height:520px){ #pad button{width:62px;height:62px} #pad .dpad button{width:54px;height:54px} }
+</style>
+</head>
+<body>
+
+<div id="canvas-wrap"><canvas id="unity-canvas" tabindex="-1" aria-label="Hollow Knight"></canvas></div>
+
+<!-- ================= start / progress screen ================= -->
+<div id="screen">
+  <h1>Hollow Knight<small>web port &middot; iPad / mobile build</small></h1>
+  <div id="status">Tap start to begin.</div>
+  <div id="bar"><i></i></div>
+  <div id="pct"></div>
+  <div id="sub">First run downloads ~884 MB once and stores it on this device, so every
+    later load starts without downloading again.</div>
+  <button class="main" id="startBtn">Start</button>
+  <div id="notes">
+    Keep this tab open and in the foreground while the game loads.<br>
+    On an iPad, switching apps or letting the screen lock can make Safari kill the tab.
+  </div>
+  <div id="err" class="err"></div>
+</div>
+
+<div id="bgwarn" class="hidden">Keep this tab in the foreground or the load may be killed.</div>
+
+<div id="chips">
+  <button class="chip" id="fps">-- fps</button>
+  <button class="chip" id="menuBtn">Menu</button>
+</div>
+
+<div id="toast"></div>
+
+<!-- ================= touch controls ================= -->
+<div id="pad">
+  <div class="side left">
+    <div class="cluster dpad">
+      <span></span>
+      <button data-key="ArrowUp" aria-label="up">▲</button>
+      <span></span>
+      <button data-key="ArrowLeft" aria-label="left">◀</button>
+      <span></span>
+      <button data-key="ArrowRight" aria-label="right">▶</button>
+      <span></span>
+      <button data-key="ArrowDown" aria-label="down">▼</button>
+      <span></span>
+    </div>
+  </div>
+  <div class="side right">
+    <div class="cluster" style="grid-template-columns:repeat(2,1fr)">
+      <button data-key="z" aria-label="jump">Jump<small style="font-size:10px;opacity:.7">Z</small></button>
+      <button data-key="x" aria-label="attack">Attack<small style="font-size:10px;opacity:.7">X</small></button>
+      <button data-key="c" aria-label="dash" class="small">Dash<small style="font-size:10px;opacity:.7">C</small></button>
+      <button data-key="a" aria-label="focus">Focus<small style="font-size:10px;opacity:.7">A</small></button>
+      <button data-key="d" aria-label="dream nail" class="small">Dream<small style="font-size:10px;opacity:.7">D</small></button>
+      <button data-key="e" aria-label="quick cast" class="small">Cast<small style="font-size:10px;opacity:.7">E</small></button>
+      <button data-key="s" aria-label="super dash" class="small">S.Dash<small style="font-size:10px;opacity:.7">S</small></button>
+      <button data-key="Tab" aria-label="map" class="small">Map<small style="font-size:10px;opacity:.7">Tab</small></button>
+      <button data-key="Escape" aria-label="pause" class="small">Pause<small style="font-size:10px;opacity:.7">Esc</small></button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= diagnostics panel ================= -->
+<input type="file" id="saveFile" accept=".json,.txt,.dat,application/json" class="hidden">
+
+<div id="panel" class="hidden">
+  <h3>Storage</h3>
+  <div id="storeRows"></div>
+  <h3>Settings</h3>
+  <div>
+    <button id="padToggle">Touch controls: off</button>
+    <button id="queueBtn">Render quality: 100%</button>
+    <button id="compatBtn">Compatibility mode: off</button>
+    <button id="exportBtn">Export save</button>
+    <button id="importBtn">Import save</button>
+    <button id="clearBtn">Clear cached game data</button>
+    <button id="copyBtn">Copy diagnostics</button>
+    <button id="reloadBtn">Reload</button>
+  </div>
+  <h3>Log</h3>
+  <div id="logbox"></div>
+</div>
+
+<script src="hk-stream.js"></script>
+<script>
+/* ============================================================================
+ * Hollow Knight — iPad/mobile front-end
+ * ----------------------------------------------------------------------------
+ * Loading is done by hk-stream.js:
+ *   1. the 45 data chunks + 2 wasm chunks are streamed to OPFS (on-device
+ *      storage) through hk-writer.js — a few MB of RAM, resumable;
+ *   2. the merged files are remembered, so later loads skip the download;
+ *   3. only the data Unity itself pulls into its ArrayBuffer stays in RAM.
+ * ==========================================================================*/
+(function () {
+  'use strict';
+
+  /* ---------------------------------------------------------------- *
+   * Build description (must match the Build/ folder)
+   * ---------------------------------------------------------------- */
+  var PART = 20866662; // size of every chunk except the last one of each file
+  var BUILD = {
+    id: 'hk-webgl-2026-10-11',
+    buildDir: 'Build/',
+    loader: 'Build/hktruffled.loader.js',
+    framework: 'Build/hktruffled.framework.js',
+    streamingAssets: 'StreamingAssets/',
+    data: {
+      cacheKey: 'hktruffled.data',
+      mime: 'application/octet-stream',
+      partBytes: new Array(44).fill(PART).concat([8756670]),
+      total: 926889798,
+    },
+    wasm: {
+      cacheKey: 'hktruffled.wasm',
+      mime: 'application/wasm',
+      partBytes: [PART, 9390603],
+      total: 30257265,
+    },
+  };
+
+  // Optional override, e.g. ipad.html?base=https://cdn.jsdelivr.net/gh/kinggerb/hollowknightgame@main/
+  var FALLBACK_BASE = 'https://cdn.jsdelivr.net/gh/kinggerb/hollowknightgame@main/';
+  var params = new URLSearchParams(location.search);
+  var ASSET_BASE = params.get('base') || ''; // '' = same folder as this page
+  var useRewriter = false;
+
+  /* ---------------------------------------------------------------- *
+   * Small helpers
+   * ---------------------------------------------------------------- */
+  var $ = function (id) { return document.getElementById(id); };
+  var screenEl = $('screen'), statusEl = $('status'), barEl = $('bar').firstElementChild,
+      pctEl = $('pct'), subEl = $('sub'), errEl = $('err'), notesEl = $('notes'),
+      startBtn = $('startBtn'), bgWarn = $('bgwarn'), toastEl = $('toast'),
+      panelEl = $('panel'), logBox = $('logbox'), fpsEl = $('fps'), padEl = $('pad');
+
+  var logLines = [];
+  function log() {
+    var parts = [];
+    for (var i = 0; i < arguments.length; i++) {
+      var a = arguments[i];
+      parts.push(typeof a === 'string' ? a : safeJson(a));
+    }
+    var line = new Date().toISOString().substr(11, 8) + '  ' + parts.join(' ');
+    logLines.push(line);
+    if (logLines.length > 400) logLines.shift();
+    if (logBox) logBox.textContent = logLines.slice(-160).join('\n');
+    console.log('[hk]', parts.join(' '));
+  }
+  function logError() {
+    var parts = [];
+    for (var i = 0; i < arguments.length; i++) parts.push(String(arguments[i]));
+    log('ERROR ' + parts.join(' '));
+  }
+  function safeJson(o) {
+    try { return JSON.stringify(o); } catch (e) { return String(o); }
+  }
+  function mb(b) { return (b / 1048576).toFixed(1) + ' MB'; }
+  var toastTimer = 0;
+  function toast(msg, ms) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, ms || 4000);
+  }
+  function setStatus(text) { statusEl.textContent = text; }
+  function setProgress(fraction, label) {
+    if (typeof fraction === 'number') barEl.style.width = Math.max(0, Math.min(1, fraction)) * 100 + '%';
+    pctEl.textContent = label || '';
+  }
+  function abs(url) { return ASSET_BASE ? ASSET_BASE.replace(/\/$/, '') + '/' + url : url; }
+
+  /* ---------------------------------------------------------------- *
+   * Crash watchdog: remembers the last stage so a killed tab leaves a trace
+   * ---------------------------------------------------------------- */
+  var lastMark = { stage: '', at: 0 };
+  function markStage(stage) {
+    var t = Date.now();
+    if (stage === lastMark.stage && t - lastMark.at < 4000) return;
+    lastMark = { stage: stage, at: t };
+    try { localStorage.setItem('hk.stage', JSON.stringify({ stage: stage, at: t })); } catch (e) {}
+  }
+  function clearStage() {
+    try { localStorage.removeItem('hk.stage'); } catch (e) {}
+  }
+  function lastStage() {
+    try { return JSON.parse(localStorage.getItem('hk.stage') || 'null'); } catch (e) { return null; }
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Asset base: make sure the Build/ files are reachable from this page
+   * ---------------------------------------------------------------- */
+  async function resolveAssetBase() {
+    try {
+      var head = await fetch(abs('StreamingAssets/StreamingAssets.txt'), { method: 'HEAD', cache: 'no-store' });
+      if (head && head.ok) return;
+    } catch (e) { /* fall through */ }
+    if (!ASSET_BASE) {
+      ASSET_BASE = FALLBACK_BASE;
+      useRewriter = true;
+      log('local assets not found next to this page — using ' + ASSET_BASE);
+    }
+  }
+
+  // Only used when the page is not served next to the assets: Unity asks for
+  // relative files like "sharedassets127.resource", so route those to the
+  // chosen base as well.
+  function installUrlRewriter() {
+    if (!useRewriter) return;
+    var known = /^(Build\/|StreamingAssets\/|sharedassets[0-9]+\.resource|hktruffled)/;
+    var origFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      try {
+        if (typeof input === 'string' && known.test(input) && !/^[a-z]+:/i.test(input)) input = abs(input);
+      } catch (e) {}
+      return origFetch(input, init);
+    };
+    var origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      var args = Array.prototype.slice.call(arguments);
+      try {
+        if (typeof url === 'string' && known.test(url) && !/^[a-z]+:/i.test(url)) args[1] = abs(url);
+      } catch (e) {}
+      return origOpen.apply(this, args);
+    };
+    log('URL rewriter installed for the fallback asset host');
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Audio unlock (iOS refuses to start audio without a user gesture)
+   * ---------------------------------------------------------------- */
+  function installAudioUnlock() {
+    var contexts = [];
+    ['AudioContext', 'webkitAudioContext'].forEach(function (name) {
+      var Orig = window[name];
+      if (!Orig) return;
+      function Wrapped() {
+        var ctx = new (Function.prototype.bind.apply(Orig, [null].concat(Array.prototype.slice.call(arguments))))();
+        contexts.push(ctx);
+        return ctx;
+      }
+      Wrapped.prototype = Orig.prototype;
+      try { window[name] = Wrapped; } catch (e) {}
+    });
+    var unlock = function () {
+      contexts.forEach(function (ctx) {
+        try { if (ctx.state === 'suspended') ctx.resume(); } catch (e) {}
+      });
+      try {
+        // Unity's own audio workaround hook, if the build exposes one.
+        var inst = window.unityInstance;
+        if (inst && typeof inst.SendMessage === 'function' && !unlock.done) {
+          unlock.done = true;
+        }
+      } catch (e) {}
+    };
+    ['touchend', 'pointerup', 'mousedown', 'keydown'].forEach(function (ev) {
+      document.addEventListener(ev, unlock, { passive: true });
+    });
+    log('audio unlock armed (' + contexts.length + ' contexts created so far)');
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Keep the screen awake while loading (iPad dims/locks aggressively)
+   * ---------------------------------------------------------------- */
+  var wakeLock = null;
+  async function keepAwake() {
+    try {
+      if (navigator.wakeLock && navigator.wakeLock.request) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        log('screen wake lock acquired');
+      }
+    } catch (e) {
+      log('wake lock unavailable: ' + e.message);
+    }
+  }
+  function releaseAwake() {
+    try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (e) {}
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Render resolution (keeps the GPU work in check on iPads)
+   * ---------------------------------------------------------------- */
+  var canvas = $('unity-canvas');
+  var wrap = $('canvas-wrap');
+  var QUALITIES = [1, 0.85, 0.7, 0.55, 0.4];
+  var qualityIndex = parseFloat(localStorage.getItem('hk.quality') || '0') || 0;
+  if (qualityIndex < 0 || qualityIndex >= QUALITIES.length) qualityIndex = 0;
+
+  function applyResolution() {
+    var q = QUALITIES[qualityIndex];
+    var w = Math.max(320, Math.round(window.innerWidth * q));
+    var h = Math.max(240, Math.round(window.innerHeight * q));
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    canvas.style.transform = q === 1 ? 'none' : 'scale(' + (1 / q).toFixed(4) + ')';
+    // Unity sizes its back buffer from the element size; keep them in sync so
+    // the render resolution really is q x the CSS pixel size (DPR is forced
+    // to 1 by the loader).
+    if (!unityInstance) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+  }
+  var resizeTimer = 0;
+  function onResize() {
+    applyResolution();
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      applyResolution();
+      setChips();
+    }, 350);
+  }
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', function () { setTimeout(onResize, 400); });
+
+  /* ---------------------------------------------------------------- *
+   * Diagnostics panel
+   * ---------------------------------------------------------------- */
+  var caps = null;
+
+  function setChips() {
+    var q = Math.round(QUALITIES[qualityIndex] * 100) + '%';
+    $('queueBtn').textContent = 'Render quality: ' + q;
+    $('padToggle').textContent = 'Touch controls: ' + (padOn ? 'on' : 'off');
+    $('compatBtn').textContent = 'Compatibility mode: ' + (compatMode ? 'on' : 'off');
+  }
+
+  async function refreshStoreRows() {
+    var rows = [];
+    if (caps) {
+      rows.push(['private file system (OPFS)', caps.opfs ? 'yes' : 'no' + (caps.opfsError ? ' — ' + caps.opfsError : '')]);
+      rows.push(['storage quota', caps.quota ? mb(caps.quota) : 'unknown']);
+      rows.push(['used by this site', mb(caps.usage || 0)]);
+      rows.push(['free for us', caps.available ? mb(caps.available) : 'unknown']);
+      rows.push(['secure context', caps.secure ? 'yes' : 'no']);
+      rows.push(['web workers', caps.workers ? 'yes' : 'no']);
+    }
+    var info = null;
+    try { info = await HKStream.cacheInfo(); } catch (e) {}
+    if (info) {
+      info.entries.forEach(function (e) {
+        rows.push([e.name, e.size ? mb(e.size) : '']);
+      });
+      if (info.error) rows.push(['cache error', info.error]);
+    }
+    var html = '';
+    rows.forEach(function (r) {
+      html += '<div class="row"><span>' + r[0] + '</span><span>' + r[1] + '</span></div>';
+    });
+    $('storeRows').innerHTML = html || '<div class="row"><span>(no info)</span></div>';
+  }
+
+  var padOn = localStorage.getItem('hk.pad') !== '0' && isTouch();
+  var compatMode = localStorage.getItem('hk.compat') === '1';
+  function isTouch() {
+    return (navigator.maxTouchPoints || 0) > 0 || /iPad|iPhone|iPod|Android/i.test(navigator.userAgent);
+  }
+
+  $('menuBtn').addEventListener('click', async function () {
+    panelEl.classList.toggle('hidden');
+    if (!panelEl.classList.contains('hidden')) {
+      setChips();
+      await refreshStoreRows();
+    }
+  });
+  $('padToggle').addEventListener('click', function () {
+    padOn = !padOn;
+    localStorage.setItem('hk.pad', padOn ? '1' : '0');
+    applyPad();
+    setChips();
+  });
+  $('queueBtn').addEventListener('click', function () {
+    qualityIndex = (qualityIndex + 1) % QUALITIES.length;
+    localStorage.setItem('hk.quality', String(qualityIndex));
+    applyResolution();
+    setChips();
+  });
+  $('compatBtn').addEventListener('click', function () {
+    compatMode = !compatMode;
+    localStorage.setItem('hk.compat', compatMode ? '1' : '0');
+    setChips();
+    toast('Reload to apply compatibility mode');
+  });
+  $('clearBtn').addEventListener('click', async function () {
+    var okDone = await HKStream.clearCache();
+    clearStage();
+    toast(okDone ? 'Cached game data deleted — reload and it will download again' : 'Nothing to delete');
+    refreshStoreRows();
+  });
+  $('copyBtn').addEventListener('click', async function () {
+    var text = logLines.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Diagnostics copied');
+    } catch (e) {
+      toast('Clipboard blocked — open the console instead');
+    }
+  });
+  $('reloadBtn').addEventListener('click', function () { location.reload(); });
+  $('exportBtn').addEventListener('click', function () { exportSave(); });
+  $('importBtn').addEventListener('click', function () { $('saveFile').click(); });
+  $('saveFile').addEventListener('change', function (ev) {
+    var file = ev.target.files && ev.target.files[0];
+    if (file) importSave(file);
+    ev.target.value = '';
+  });
+
+  /* ---------------------------------------------------------------- *
+   * FPS chip
+   * ---------------------------------------------------------------- */
+  var frameTimes = [], fpsTimer = 0, lastFrame = 0, fpsRunning = false;
+  function fpsLoop(t) {
+    if (!fpsRunning) return;
+    if (lastFrame) {
+      frameTimes.push(t - lastFrame);
+      if (frameTimes.length > 60) frameTimes.shift();
+    }
+    lastFrame = t;
+    requestAnimationFrame(fpsLoop);
+  }
+  function startFps() {
+    if (fpsRunning) return;
+    fpsRunning = true;
+    requestAnimationFrame(fpsLoop);
+    fpsTimer = setInterval(function () {
+      if (!frameTimes.length) return;
+      var avg = frameTimes.reduce(function (a, b) { return a + b; }, 0) / frameTimes.length;
+      var fps = avg > 0 ? 1000 / avg : 0;
+      fpsEl.textContent = Math.round(fps) + ' fps';
+      fpsEl.style.color = fps > 50 ? '#9dffb0' : fps > 30 ? '#ffd479' : '#ff9d9d';
+    }, 1000);
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Touch controls → synthetic keyboard events for Unity
+   * ---------------------------------------------------------------- */
+  var KEYCODES = {
+    ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
+    Tab: 9, Enter: 13, Escape: 27, Space: 32, Shift: 16,
+    z: 90, x: 88, c: 67, a: 65, d: 68, e: 69, s: 83, i: 73, w: 87,
+  };
+  var META = {
+    ArrowLeft: 'ArrowLeft', ArrowUp: 'ArrowUp', ArrowRight: 'ArrowRight', ArrowDown: 'ArrowDown',
+    Tab: 'Tab', Enter: 'Enter', Escape: 'Escape', Space: ' ', Shift: 'Shift',
+    z: 'z', x: 'x', c: 'c', a: 'a', d: 'd', e: 'e', s: 's', i: 'i', w: 'w',
+  };
+  function keyCodeOf(k) { return KEYCODES[k] || (k.length === 1 ? k.toUpperCase().charCodeAt(0) : 0); }
+  function codeOf(k) {
+    if (/^Arrow/.test(k)) return k;
+    if (k.length === 1) return 'Key' + k.toUpperCase();
+    return k;
+  }
+  function sendKey(k, type) {
+    try { canvas.focus({ preventScroll: true }); } catch (e) {}
+    var init = {
+      key: META[k] || k, code: codeOf(k), keyCode: keyCodeOf(k), which: keyCodeOf(k),
+      bubbles: true, cancelable: true, composed: true,
+    };
+    var ev;
+    try { ev = new KeyboardEvent(type, init); } catch (e) { ev = document.createEvent('Event'); ev.initEvent(type, true, true); }
+    try { Object.defineProperty(ev, 'keyCode', { get: function () { return keyCodeOf(k); } }); } catch (e) {}
+    try { Object.defineProperty(ev, 'which', { get: function () { return keyCodeOf(k); } }); } catch (e) {}
+    canvas.dispatchEvent(ev);
+  }
+  function applyPad() {
+    padEl.classList.toggle('on', !!padOn);
+  }
+  Array.prototype.forEach.call(padEl.querySelectorAll('button[data-key]'), function (btn) {
+    var key = btn.getAttribute('data-key');
+    var held = false;
+    var down = function (e) {
+      e.preventDefault();
+      if (held) return;
+      held = true;
+      btn.classList.add('held');
+      sendKey(key, 'keydown');
+    };
+    var up = function (e) {
+      if (e) e.preventDefault();
+      if (!held) return;
+      held = false;
+      btn.classList.remove('held');
+      sendKey(key, 'keyup');
+    };
+    btn.addEventListener('touchstart', down, { passive: false });
+    btn.addEventListener('touchend', up);
+    btn.addEventListener('touchcancel', up);
+    btn.addEventListener('mousedown', down);
+    btn.addEventListener('mouseup', up);
+    btn.addEventListener('mouseleave', up);
+    btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  });
+
+  /* ---------------------------------------------------------------- *
+   * iOS housekeeping: kill gestures, double-tap zoom, context menu
+   * ---------------------------------------------------------------- */
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (ev) {
+    document.addEventListener(ev, function (e) { e.preventDefault(); }, { passive: false });
+  });
+  document.addEventListener('contextmenu', function (e) { if (e.target !== canvas) e.preventDefault(); });
+  document.addEventListener('dblclick', function (e) { e.preventDefault(); }, { passive: false });
+  document.addEventListener('touchmove', function (e) {
+    if (e.target === canvas || wrap.contains(e.target)) e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      if (!booted) bgWarn.classList.remove('hidden');
+      markStage('hidden: ' + (currentStage || 'unknown'));
+    } else {
+      bgWarn.classList.add('hidden');
+      applyResolution();
+      if (wakeLock === null && !booted) keepAwake();
+    }
+  });
+
+  /* ---------------------------------------------------------------- *
+   * Saves: export / import the game's IndexedDB (IDBFS) data
+   * ---------------------------------------------------------------- */
+  function openDb(name) {
+    return new Promise(function (res, rej) {
+      var req = indexedDB.open(name);
+      req.onsuccess = function () { res(req.result); };
+      req.onerror = function () { rej(req.error); };
+    });
+  }
+  function exportSave() {
+    if (typeof indexedDB === 'undefined') {
+      toast('Saving is not available in this browser/private window');
+      return;
+    }
+    var req = indexedDB.open('/idbfs');
+    req.onblocked = function () { toast('Close other game tabs and try again'); };
+    req.onsuccess = function () {
+      var db = req.result;
+      if (!db.objectStoreNames.contains('FILE_DATA')) { toast('No save data yet'); return; }
+      var tx = db.transaction('FILE_DATA', 'readonly');
+      var store = tx.objectStore('FILE_DATA');
+      var all = store.getAll(), allKeys = store.getAllKeys();
+      all.onsuccess = function () {
+        allKeys.onsuccess = function () {
+          var values = all.result, keys = allKeys.result;
+          var exportData = keys.map(function (key, i) {
+            var entry = values[i], contents = entry.contents;
+            if (contents instanceof Int8Array) {
+              var obj = {};
+              for (var j = 0; j < contents.length; j++) obj[j] = contents[j];
+              contents = obj;
+            }
+            return { key: key, value: { timestamp: entry.timestamp, mode: entry.mode, contents: contents } };
+          });
+          var blob = new Blob([JSON.stringify(exportData)], { type: 'application/json' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'hk-save.json';
+          a.click();
+          setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+          toast('Save exported');
+        };
+      };
+    };
+    req.onerror = function () { toast('Could not read the save database'); };
+  }
+  function importSave(file) {
+    if (typeof indexedDB === 'undefined') {
+      toast('Saving is not available in this browser/private window');
+      return;
+    }
+    var reader = new FileReader();
+    reader.onerror = function () { toast('Could not read that file'); };
+    reader.onload = function () {
+      var entries;
+      try { entries = JSON.parse(reader.result); } catch (e) { toast('Not a valid save file'); return; }
+      var req = indexedDB.open('/idbfs');
+      req.onsuccess = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains('FILE_DATA')) { toast('Start the game once before importing'); return; }
+        var tx = db.transaction('FILE_DATA', 'readwrite');
+        var store = tx.objectStore('FILE_DATA');
+        store.getAllKeys().onsuccess = function (ev) {
+          var keys = ev.target.result;
+          if (!keys.length) { toast('Start the game once before importing'); return; }
+          var currentHash = String(keys[0]).split('/')[2];
+          keys.forEach(function (k) { if (String(k).indexOf(currentHash) === -1) store.delete(k); });
+          entries.forEach(function (entry) {
+            var parts = String(entry.key).split('/');
+            parts[2] = currentHash;
+            var val = entry.value, contents = val.contents;
+            if (contents && typeof contents === 'object' && !(contents instanceof Int8Array)) {
+              var idxs = Object.keys(contents).map(Number).sort(function (a, b) { return a - b; });
+              var arr = new Int8Array(idxs.length);
+              idxs.forEach(function (i) { arr[i] = contents[i]; });
+              contents = arr;
+            }
+            store.put({ timestamp: new Date(val.timestamp), mode: val.mode, contents: contents }, parts.join('/'));
+          });
+          tx.oncomplete = function () { toast('Save imported — reload the page'); };
+          tx.onerror = function () { toast('Import failed'); };
+        };
+      };
+    };
+    reader.readAsText(file);
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Script loading
+   * ---------------------------------------------------------------- */
+  function loadScript(url) {
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = url;
+      s.onload = function () { res(); };
+      s.onerror = function () { rej(new Error('could not load ' + url)); };
+      document.body.appendChild(s);
+    });
+  }
+
+  /* ---------------------------------------------------------------- *
+   * The load itself
+   * ---------------------------------------------------------------- */
+  var booted = false, currentStage = 'idle', unityInstance = null;
+
+  function onLoadProgress(p) {
+    var frac = p.total ? p.loaded / p.total : 0;
+    setProgress(frac, mb(p.loaded) + ' / ' + mb(p.total) + '  (' + Math.round(frac * 100) + '%)');
+    setStatus(p.pass > 1 ? 'Downloading game data (retry ' + p.pass + ')' : 'Downloading game data — chunk ' + p.part + ' of ' + p.parts);
+    currentStage = 'download ' + Math.round(frac * 100) + '%';
+    markStage(currentStage);
+  }
+
+  function datasetParts(spec) {
+    return spec.partBytes.map(function (bytes, i) {
+      return { url: abs(BUILD.buildDir + spec.cacheKey + '.part' + (i + 1)), bytes: bytes };
+    });
+  }
+
+  /**
+   * Load one dataset with a stall watchdog: a download that stops delivering
+   * bytes for two minutes is aborted and retried (the OPFS file keeps whatever
+   * was already written, so the retry resumes instead of starting over).
+   */
+  async function loadDatasetWithRetry(spec, onProgress, label) {
+    var lastErr = null;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      var controller = typeof AbortController === 'function' ? new AbortController() : null;
+      var lastProgress = Date.now();
+      var watchdog = setInterval(function () {
+        if (booted) return;
+        if (Date.now() - lastProgress > 120000) {
+          log('no data for 2 minutes — restarting the ' + label + ' download');
+          setStatus('Connection stalled — retrying…');
+          lastProgress = Date.now();
+          if (controller) controller.abort();
+        }
+      }, 15000);
+      try {
+        return await HKStream.ensureDataset({
+          parts: datasetParts(spec),
+          expectedSize: spec.total,
+          cacheKey: spec.cacheKey,
+          buildId: BUILD.id,
+          mime: spec.mime,
+          workerUrl: 'hk-writer.js',
+          signal: controller ? controller.signal : undefined,
+          onProgress: function (p) {
+            lastProgress = Date.now();
+            if (onProgress) onProgress(p);
+          },
+          onStatus: function (s) { setStatus(s); },
+          onLog: log,
+        });
+      } catch (err) {
+        lastErr = err;
+        clearInterval(watchdog);
+        var msg = String((err && err.message) || err);
+        var permanent = /quota|storage|space|not enough|unsupported|not available/i.test(msg);
+        if (attempt >= 3 || permanent) throw err;
+        log('retrying ' + label + ' (' + attempt + '/3) after: ' + msg);
+        setStatus('Connection problem — retrying ' + label + '…');
+        await new Promise(function (r) { setTimeout(r, 2000 + attempt * 2000); });
+      } finally {
+        clearInterval(watchdog);
+      }
+    }
+    throw lastErr || new Error('could not load ' + label);
+  }
+
+  async function loadAndBoot() {
+    try {
+      /* --- 1. how much storage do we get? --- */
+      setStatus('Checking device storage…');
+      caps = await HKStream.detect();
+      log('capabilities', {
+        opfs: caps.opfs, quotaMB: Math.round(caps.quota / 1048576), usedMB: Math.round(caps.usage / 1048576),
+        secure: caps.secure, workers: caps.workers, opfsError: caps.opfsError || undefined, ua: navigator.userAgent,
+      });
+      HKStream.requestPersistence().then(function (granted) { log('persistent storage: ' + granted); });
+
+      if (caps.quota && caps.available && caps.available < (BUILD.data.total + BUILD.wasm.total) * 1.05) {
+        log('warning: only ' + mb(caps.available) + ' of quota free — the cache may not fit');
+      }
+
+      /* --- 2. the data chunks (the big ones) --- */
+      currentStage = 'prepare data';
+      markStage(currentStage);
+      var dataSet = await loadDatasetWithRetry(BUILD.data, onLoadProgress, 'game data');
+      log('data ready via ' + dataSet.kind + ': ' + mb(dataSet.size));
+      if (dataSet.kind === 'memory') {
+        // No OPFS (private window, very old Safari, storage blocked): the data
+        // now sits in RAM and the tab will most likely be killed later.
+        log('warning: no on-device storage available, data is held in RAM');
+        setStatus('Warning: no on-device storage — this may fail');
+        toast(
+          'No on-device storage available (private window?). Leave private browsing and reload.',
+          8000
+        );
+      }
+
+      /* --- 3. the wasm module --- */
+      currentStage = 'prepare wasm';
+      markStage(currentStage);
+      var wasmSet = await loadDatasetWithRetry(
+        BUILD.wasm,
+        function (p) {
+          var frac = p.total ? p.loaded / p.total : 0;
+          setProgress(frac, mb(p.loaded) + ' / ' + mb(p.total));
+        },
+        'game engine'
+      );
+      log('wasm ready via ' + wasmSet.kind + ': ' + mb(wasmSet.size));
+
+      /* --- 4. Unity --- */
+      setStatus('Starting the game…');
+      currentStage = 'unity boot';
+      markStage(currentStage);
+      setProgress(0, '');
+      await loadScript(abs(BUILD.loader));
+
+      var config = {
+        dataUrl: dataSet.url,
+        codeUrl: wasmSet.url,
+        frameworkUrl: abs(BUILD.framework),
+        streamingAssetsUrl: abs(BUILD.streamingAssets),
+        companyName: 'Team Cherry',
+        productName: 'Hollow Knight',
+        productVersion: '1.0',
+        // Same context as the desktop pages (no AA, no alpha, no stencil unless
+        // compatibility mode is on) plus mobile power hints.
+        webglContextAttributes: {
+          alpha: false,
+          depth: true,
+          stencil: !!compatMode,
+          antialias: false,
+          premultipliedAlpha: false,
+          preserveDrawingBuffer: false,
+          desynchronized: true,
+          powerPreference: 'high-performance',
+          failIfMajorPerformanceCaveat: false,
+        },
+        print: function (t) { log(t); },
+        printErr: function (t) { log('warn ' + t); },
+        onAbort: function (what) { logError('unity abort: ' + what); },
+      };
+      // NOTE: `memory` is intentionally not passed — this loader ignores it and
+      // the wasm module declares its own heap (32 MB initial, up to 2 GB).
+
+      var instance = await window.createUnityInstance(canvas, config, function (progress) {
+        var pct = Math.round(progress * 100);
+        setStatus('Loading into memory — ' + pct + '%');
+        setProgress(progress, pct + '%');
+        currentStage = 'unity memory ' + pct + '%';
+        if (pct % 10 === 0) markStage(currentStage);
+      });
+      unityInstance = instance;
+      window.unityInstance = instance;
+
+      /* --- 5. done --- */
+      booted = true;
+      currentStage = 'running';
+      clearStage();
+      releaseAwake();
+      bgWarn.classList.add('hidden');
+      screenEl.classList.add('hidden');
+      fpsEl.classList.remove('hidden');
+      applyPad();
+      startFps();
+      log('game booted');
+      toast('Tap the screen once so sound can start', 5000);
+      canvas.focus && canvas.focus();
+
+      // The URL is no longer needed once Unity has copied the data.
+      setTimeout(function () {
+        try { dataSet.dispose(); } catch (e) {}
+        try { wasmSet.dispose(); } catch (e) {}
+      }, 15000);
+    } catch (err) {
+      releaseAwake();
+      var message = (err && err.message) || String(err);
+      if (err && err.name === 'AbortError') message = 'Cancelled';
+      logError('load failed: ' + message, err && err.stack ? String(err.stack).split('\n').slice(0, 4).join(' | ') : '');
+      setStatus('Could not load the game');
+      errEl.textContent =
+        message + '\n\n' +
+        (String(message).match(/quota|Quota|space/i)
+          ? 'There is not enough free storage on this device. Free up ~2 GB (Settings ▸ General ▸ iPad Storage) and tap start again.\n\n'
+          : '') +
+        'Details are in the Menu ▸ Log panel. If the tab was killed while loading, the ' +
+        'game data is still cached — tapping start again continues where it stopped.';
+      startBtn.textContent = 'Try again';
+      startBtn.classList.remove('hidden');
+      errEl.classList.remove('hidden');
+      startBtn.onclick = function () { location.reload(); };
+    }
+  }
+
+  async function start() {
+    startBtn.classList.add('hidden');
+    errEl.classList.add('hidden');
+    subEl.classList.add('hidden');
+    notesEl.classList.remove('hidden');
+    installAudioUnlock();
+    keepAwake();
+    try {
+      if (screen.orientation && screen.orientation.lock) {
+        await screen.orientation.lock('landscape').catch(function () {});
+      }
+    } catch (e) {}
+    await loadAndBoot();
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Boot
+   * ---------------------------------------------------------------- */
+  (function init() {
+    applyResolution();
+    applyPad();
+    setChips();
+    fpsEl.classList.add('hidden');
+
+    log('Hollow Knight web loader', 'stream=' + HKStream.VERSION, 'touch=' + isTouch());
+    var prev = lastStage();
+    if (prev && prev.stage) {
+      var age = Math.round((Date.now() - prev.at) / 1000);
+      if (age < 3600 && String(prev.stage).indexOf('hidden') !== 0) {
+        log('previous attempt ended during: ' + prev.stage + ' (' + age + 's ago)');
+        toast('Previous attempt stopped during "' + prev.stage + '"', 6000);
+      }
+    }
+
+    HKStream.detect().then(function (c) {
+      caps = c;
+      log('storage: OPFS=' + c.opfs + ' quota=' + (c.quota ? mb(c.quota) : '?') + ' secure=' + c.secure);
+    });
+    resolveAssetBase().then(function () {
+      installUrlRewriter();
+      startBtn.addEventListener('click', function onStart() {
+        startBtn.removeEventListener('click', onStart);
+        start();
+      });
+      log('asset base: ' + (ASSET_BASE || '(this page)'));
+    });
+  })();
+})();
+</script>
+</body>
+</html>
