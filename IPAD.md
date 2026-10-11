@@ -118,10 +118,12 @@ editors such as [hollowedit.com](https://hollowedit.com/) work with them:
    editor serves); that file is used as-is in the next step.
 3. **Import** — Menu ▸ *Import save* accepts the `.dat.html` (or `.dat`), the
    page's own `hk-save.json` export, and even plain/base64 save text from other
-   editors. The importer validates the save (it must decrypt to real save JSON)
-   before anything is written, writes it to the slot that matches the file name
-   (`user3.dat.html` → slot 3, otherwise slot 1), and leaves other slots alone.
-   Reload the page afterwards.
+   editors. The file picker deliberately has no type filter (iPadOS greys out
+   every file when the list contains extensions it cannot map, like
+   `.dat.html`); instead the importer validates the save — it must decrypt to
+   real save JSON before anything is written. It goes to the slot that matches
+   the file name (`user3.dat.html` → slot 3, otherwise slot 1) and leaves other
+   slots alone. Reload the page afterwards.
 
 ## 7. Troubleshooting
 

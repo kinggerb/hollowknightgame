@@ -243,6 +243,20 @@ test('findSave rejects things that are not saves', () => {
   assert.throws(() => codec.findSave(new Uint8Array(10)));
 });
 
+test('the save file input has no accept filter (iPadOS greys out all files otherwise)', () => {
+  const dom = new JSDOM(ipadHtml);
+  try {
+    const input = dom.window.document.getElementById('saveFile');
+    assert.equal(
+      input.getAttribute('accept'), null,
+      'an accept list with extensions Safari cannot map (.dat.html, .dat) disables ' +
+      'every file in the iPadOS picker; contents-based validation is used instead'
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
 /* page-level import */
 
 test('importing hollowedit-style user1.dat.html writes the encrypted slot', async () => {

@@ -169,7 +169,11 @@
 </div>
 
 <!-- ================= diagnostics panel ================= -->
-<input type="file" id="saveFile" accept=".json,.txt,.dat,.dat.html,application/json,application/octet-stream" class="hidden">
+<!-- No accept filter: iPadOS greys out every file in the picker when the
+     list contains extensions it cannot map to a system type (.dat.html
+     from save editors, .dat, …). Import instead validates the file's
+     contents, which is safer than trusting the extension anyway. -->
+<input type="file" id="saveFile" class="hidden">
 
 <div id="panel" class="hidden">
   <h3>Storage</h3>
