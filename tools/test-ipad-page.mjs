@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const html = await readFile(path.join(here, '..', 'ipad.html'), 'utf8');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function createPage({ touch = true, gamepad = null } = {}) {
+async function createPage({ touch = true, gamepad = null, storage = null } = {}) {
   const jsdomErrors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (error) => jsdomErrors.push(error));
@@ -29,6 +29,9 @@ async function createPage({ touch = true, gamepad = null } = {}) {
         value: touch ? 1 : 0,
       });
       window.fetch = async () => ({ ok: true, status: 200 });
+      if (storage) {
+        for (const [key, value] of Object.entries(storage)) window.localStorage.setItem(key, value);
+      }
       window.HKStream = {
         VERSION: 'test',
         detect: async () => ({
@@ -248,6 +251,205 @@ test('a touch-pad release cannot release a key still held by the physical keyboa
 
     keyEvent(window, canvas, 'keyup', 'z');
     assert.deepEqual(events, ['keydown', 'keyup'], 'the keyboard release is delivered after the pad is released by hiding');
+  } finally {
+    dom.window.close();
+  }
+});
+
+function clickButton(window, id) {
+  window.document.getElementById(id).dispatchEvent(new window.Event('click', { bubbles: true }));
+}
+
+function heartbeat(overrides = {}) {
+  const now = Date.now();
+  return JSON.stringify(Object.assign({
+    at: now - 30000,
+    start: now - 15 * 60000,
+    preset: 'balanced',
+    scale: 0.85,
+    fps: 60,
+    measured: 58,
+    visible: true,
+  }, overrides));
+}
+
+test('the render scale decides how big the canvas backing store is', async () => {
+  const { dom, window } = await createPage({
+    storage: { 'hk.perf': JSON.stringify({ preset: 2, scale: 0.7, fps: 45, auto: true }) },
+  });
+  try {
+    const canvas = window.document.getElementById('unity-canvas');
+    assert.equal(canvas.width, Math.round(window.innerWidth * 0.7));
+    assert.equal(canvas.height, Math.round(window.innerHeight * 0.7));
+    assert.equal(canvas.style.transform, 'scale(1.4286)', 'the small canvas is stretched back over the screen');
+    assert.equal(window.HKPerf.settings().presetId, 'smooth', 'a saved level is picked up again');
+    assert.equal(window.HKPerf.settings().fps, 45);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('the frame cap holds the game loop back; uncapped mode does not', async () => {
+  const { dom, window } = await createPage();
+  try {
+    const sample = async (count) => {
+      const stamps = [];
+      await new Promise((resolve) => {
+        let n = 0;
+        const step = (t) => {
+          stamps.push(t);
+          if (++n < count) window.requestAnimationFrame(step);
+          else resolve();
+        };
+        window.requestAnimationFrame(step);
+      });
+      return stamps;
+    };
+
+    window.HKPerf.setFps(30);           // 30 fps -> about 33 ms between frames
+    const capped = await sample(4);
+    const cappedGap = capped[3] - capped[2];
+    assert.ok(cappedGap >= 28, `a 30 fps cap should space frames ~33 ms apart, got ${cappedGap.toFixed(1)} ms`);
+
+    window.HKPerf.setFps(0);            // uncapped -> straight through
+    const free = await sample(4);
+    const freeGap = free[3] - free[2];
+    assert.ok(freeGap < 28, `uncapped frames should not be delayed, got ${freeGap.toFixed(1)} ms`);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('the graphics button walks the presets and remembers the choice', async () => {
+  const { dom, window } = await createPage();
+  try {
+    const button = window.document.getElementById('perfBtn');
+    assert.match(button.textContent, /Graphics: Balanced/, 'touch devices start at Balanced');
+    const ids = window.HKPerf.presets();
+
+    clickButton(window, 'perfBtn');
+    assert.match(button.textContent, /Graphics: Smooth/);
+    const saved = JSON.parse(window.localStorage.getItem('hk.perf'));
+    assert.equal(ids[saved.preset], 'smooth');
+    assert.equal(saved.fps, 45, 'the preset sets the frame cap as well');
+    assert.equal(saved.scale, 0.7, 'and the render scale');
+
+    clickButton(window, 'fpsBtn');
+    assert.match(window.document.getElementById('fpsBtn').textContent, /Frame cap: 30/);
+    assert.equal(window.HKPerf.settings().scale, 0.7, 'the frame cap button only changes the cap');
+
+    clickButton(window, 'queueBtn');
+    assert.match(window.document.getElementById('queueBtn').textContent, /Render scale: 55%/);
+    assert.equal(window.HKPerf.settings().fps, 30, 'the render scale button only changes the scale');
+
+    clickButton(window, 'autoBtn');
+    assert.match(window.document.getElementById('autoBtn').textContent, /Auto-degrade: off/);
+    assert.equal(JSON.parse(window.localStorage.getItem('hk.perf')).auto, false);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('auto-degrade steps down when the frame rate stays low, and only then', async () => {
+  const { dom, window } = await createPage();
+  try {
+    assert.equal(window.HKPerf.settings().presetId, 'balanced');
+    let degraded = false;
+    for (let i = 0; i < 4 && !degraded; i++) degraded = window.HKPerf.autoTick(35, true);
+    assert.ok(degraded, 'repeated slow samples lower the graphics level');
+    assert.equal(window.HKPerf.settings().presetId, 'smooth');
+
+    const level = window.HKPerf.settings().presetId;
+    for (let i = 0; i < 6; i++) window.HKPerf.autoTick(60, true);
+    assert.equal(window.HKPerf.settings().presetId, level, 'a healthy frame rate never degrades');
+
+    window.HKPerf.setFps(0);
+    let again = false;
+    for (let i = 0; i < 4 && !again; i++) again = window.HKPerf.autoTick(30, true);
+    assert.ok(again, 'uncapped play is measured against 55 fps, so 30 fps still degrades');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('a session that ended without a clean exit starts one graphics step lower', async () => {
+  const { dom, window } = await createPage({ storage: { 'hk.heartbeat': heartbeat() } });
+  try {
+    const info = window.HKPerf.lastSession();
+    assert.ok(info && info.crashed, 'a stale heartbeat means the tab was killed');
+    assert.equal(info.streak, 1);
+    assert.equal(window.HKPerf.settings().presetId, 'smooth', 'Balanced plus one crash starts at Smooth');
+    assert.equal(window.localStorage.getItem('hk.heartbeat'), null, 'the heartbeat is consumed');
+    assert.equal(window.localStorage.getItem('hk.crashStreak'), '1');
+
+    clickButton(window, 'perfBtn');
+    assert.equal(window.localStorage.getItem('hk.crashStreak'), '0', 'picking a level clears the crash streak');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('a tab killed in the background is not treated as a graphics crash', async () => {
+  const { dom, window } = await createPage({
+    storage: { 'hk.heartbeat': heartbeat({ visible: false }) },
+  });
+  try {
+    const info = window.HKPerf.lastSession();
+    assert.ok(info && !info.crashed, 'iPadOS evicting a background tab is normal');
+    assert.equal(info.streak, 0);
+    assert.equal(window.HKPerf.settings().presetId, 'balanced', 'the level is left alone');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('leaving the page normally clears the crash heartbeat', async () => {
+  const { dom, window } = await createPage({ storage: { 'hk.heartbeat': heartbeat() } });
+  try {
+    assert.equal(window.HKPerf.lastSession().crashed, true);
+    window.localStorage.setItem('hk.heartbeat', heartbeat());
+    window.dispatchEvent(new window.Event('pagehide'));
+    assert.equal(window.localStorage.getItem('hk.heartbeat'), null);
+    assert.equal(window.localStorage.getItem('hk.crashStreak'), '0');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('a game heap that grows towards the iPad limit warns once', async () => {
+  const { dom, window } = await createPage();
+  try {
+    // only the byte length is read, so no real allocation is needed
+    window.unityInstance = { Module: { HEAPU8: { length: 1700 * 1048576 } } };
+    assert.equal(window.HKPerf.heapMB(), 1700);
+    window.HKPerf.autoTick(60, true);        // pretend the game is running
+
+    const toast = window.document.getElementById('toast');
+    window.HKPerf.checkMemory();
+    assert.match(toast.textContent, /1700 MB/, 'the warning names the heap size');
+    assert.ok(toast.classList.contains('show'));
+
+    toast.textContent = '';
+    window.HKPerf.checkMemory();
+    assert.equal(toast.textContent, '', 'the warning is only shown once');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('a lost WebGL context offers a reload instead of leaving a frozen canvas', async () => {
+  const { dom, window } = await createPage();
+  try {
+    const canvas = window.document.getElementById('unity-canvas');
+    const overlay = window.document.getElementById('recover');
+    const event = new window.Event('webglcontextlost', { bubbles: true, cancelable: true });
+    canvas.dispatchEvent(event);
+    assert.equal(overlay.classList.contains('hidden'), false, 'the recovery overlay appears');
+    assert.equal(event.defaultPrevented, true, 'preventDefault() keeps the context restorable');
+    assert.match(window.document.getElementById('recoverMsg').textContent, /graphics context/);
+
+    clickButton(window, 'recoverWait');
+    assert.equal(overlay.classList.contains('hidden'), true, '“keep waiting” dismisses it');
   } finally {
     dom.window.close();
   }

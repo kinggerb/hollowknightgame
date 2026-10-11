@@ -14,6 +14,13 @@ touch controls and troubleshooting.
 * `hk-stream.js`, `hk-writer.js` — chunk loader: OPFS streaming + caching
 * `hk-save-codec.js` — save-file codec: import accepts `.dat`/`.dat.html`
   editor downloads (hollowedit.com etc.), plain JSON or base64 saves
+
+Graphics & stability on iPad — **Menu ▸ Graphics & performance** in the game:
+five levels (High → Potato) that set the render scale and the frame cap at the
+same time, auto-degrade when the frame rate stays low, and a session that gets
+killed starts the next one a step lower on its own. The build's own shaders and
+effects are inside the compiled Unity data and cannot be changed from the page;
+see **[IPAD.md §5](IPAD.md#5-graphics--performance)**.
 * `tools/serve.mjs` — local server: `node tools/serve.mjs 8080`
 * `tools/test-hk-stream.mjs` — test suite: `node tools/test-hk-stream.mjs`
 * `tools/test-save-import.mjs` — save import/codec tests: `node tools/test-save-import.mjs`
