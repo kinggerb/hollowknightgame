@@ -430,7 +430,7 @@
   function setChips() {
     var q = Math.round(QUALITIES[qualityIndex] * 100) + '%';
     $('queueBtn').textContent = 'Render quality: ' + q;
-    $('padToggle').textContent = 'Touch controls: ' + (padOn ? 'on' : 'off');
+    $('padToggle').textContent = 'Touch controls: ' + (padOn ? (padAutoHidden ? 'hidden' : 'on') : 'off');
     $('compatBtn').textContent = 'Compatibility mode: ' + (compatMode ? 'on' : 'off');
   }
 
@@ -460,6 +460,10 @@
   }
 
   var padOn = localStorage.getItem('hk.pad') !== '0' && isTouch();
+  // Keep the user's preference separate from the temporary auto-hide state.
+  // Esc / a long press can restore a pad hidden by physical input without
+  // changing the saved preference.
+  var padAutoHidden = false;
   var compatMode = localStorage.getItem('hk.compat') === '1';
   function isTouch() {
     return (navigator.maxTouchPoints || 0) > 0 || /iPad|iPhone|iPod|Android/i.test(navigator.userAgent);
@@ -474,6 +478,7 @@
   });
   $('padToggle').addEventListener('click', function () {
     padOn = !padOn;
+    padAutoHidden = false;
     localStorage.setItem('hk.pad', padOn ? '1' : '0');
     applyPad();
     setChips();
@@ -559,6 +564,26 @@
     if (k.length === 1) return 'Key' + k.toUpperCase();
     return k;
   }
+  // Use one aggregate held state for the real keyboard and the touch pad. In
+  // particular, releasing one source must not send a keyup while the other
+  // source is still holding that same key.
+  var padGeneratedEvents = typeof WeakSet === 'function' ? new WeakSet() : null;
+  var keyboardHeld = Object.create(null);
+  var padKeyCounts = Object.create(null);
+  var padKeyNames = Object.create(null);
+  var padButtonControls = [];
+  var longPressTimer = 0;
+  var longPressOrigin = null;
+  var lastTouchAt = 0;
+  var LONG_PRESS_MS = 650;
+  var TOUCH_MOUSE_GUARD_MS = 800;
+  var gamepadSnapshots = Object.create(null);
+  var gamepadPollTimer = 0;
+
+  function isPadGeneratedEvent(ev) {
+    if (padGeneratedEvents) return padGeneratedEvents.has(ev);
+    return !!(ev && ev.__hkPadGenerated);
+  }
   function sendKey(k, type) {
     try { canvas.focus({ preventScroll: true }); } catch (e) {}
     var init = {
@@ -569,28 +594,116 @@
     try { ev = new KeyboardEvent(type, init); } catch (e) { ev = document.createEvent('Event'); ev.initEvent(type, true, true); }
     try { Object.defineProperty(ev, 'keyCode', { get: function () { return keyCodeOf(k); } }); } catch (e) {}
     try { Object.defineProperty(ev, 'which', { get: function () { return keyCodeOf(k); } }); } catch (e) {}
+    if (padGeneratedEvents) padGeneratedEvents.add(ev);
+    else { try { ev.__hkPadGenerated = true; } catch (e) {} }
     canvas.dispatchEvent(ev);
   }
-  function applyPad() {
-    padEl.classList.toggle('on', !!padOn);
+  function normalizeKey(ev) {
+    var key = ev.key;
+    if (!key || key === 'Unidentified') key = ev.code;
+    if (key === 'Esc') return 'Escape';
+    if (key === ' ' || key === 'Spacebar') return 'Space';
+    if (key && /^Key[A-Z]$/i.test(key)) key = key.slice(3);
+    if (key && /^Digit[0-9]$/.test(key)) key = key.slice(5);
+    if (!key || key === 'Unidentified') {
+      var code = Number(ev.keyCode || ev.which || 0);
+      var keyByCode = {
+        9: 'Tab', 13: 'Enter', 16: 'Shift', 27: 'Escape', 32: 'Space',
+        37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown',
+      };
+      key = keyByCode[code] || (code >= 65 && code <= 90 ? String.fromCharCode(code + 32) : '');
+    }
+    if (key && key.length === 1) key = key.toLowerCase();
+    return key || '';
   }
+  function stopKeyEvent(ev) {
+    if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+    else if (ev.stopPropagation) ev.stopPropagation();
+  }
+  function holdPadKey(key) {
+    var count = padKeyCounts[key] || 0;
+    padKeyCounts[key] = count + 1;
+    if (count === 0 && !keyboardHeld[key]) sendKey(key, 'keydown');
+  }
+  function releasePadKey(key) {
+    var count = padKeyCounts[key] || 0;
+    if (!count) return;
+    if (count > 1) {
+      padKeyCounts[key] = count - 1;
+      return;
+    }
+    delete padKeyCounts[key];
+    if (!keyboardHeld[key]) sendKey(key, 'keyup');
+  }
+  function onPhysicalKeyDown(ev) {
+    if (isPadGeneratedEvent(ev)) return;
+    var key = normalizeKey(ev);
+    var managed = !!padKeyNames[key];
+    // Remember the keyboard holder before hiding the pad: hiding releases any
+    // touch buttons, but must not release a key now held by the real keyboard.
+    var padAlreadyHeld = managed && (padKeyCounts[key] || 0) > 0;
+    if (managed) keyboardHeld[key] = true;
+
+    if (key === 'Escape') showPadAfterPhysicalEscape();
+    else hidePadForPhysicalInput();
+
+    if (padAlreadyHeld) stopKeyEvent(ev);
+  }
+  function onPhysicalKeyUp(ev) {
+    if (isPadGeneratedEvent(ev)) return;
+    var key = normalizeKey(ev);
+    if (!padKeyNames[key]) return;
+    if (keyboardHeld[key]) delete keyboardHeld[key];
+    // The touch pad still owns this key; swallow the keyboard's keyup and let
+    // the last holder send the one aggregate keyup instead.
+    if (padKeyCounts[key]) stopKeyEvent(ev);
+  }
+  window.addEventListener('keydown', onPhysicalKeyDown, true);
+  window.addEventListener('keyup', onPhysicalKeyUp, true);
+
+  function isPadTarget(target) {
+    return !!(target && (target === padEl || (padEl.contains && padEl.contains(target))));
+  }
+  function applyPad() {
+    var visible = !!padOn && !padAutoHidden;
+    if (!visible) releasePadButtons();
+    padEl.classList.toggle('on', visible);
+  }
+  function hidePadForPhysicalInput() {
+    if (!padOn || padAutoHidden) return;
+    padAutoHidden = true;
+    applyPad();
+    setChips();
+  }
+  function showPadAfterPhysicalEscape() {
+    if (!padOn || !padAutoHidden) return;
+    padAutoHidden = false;
+    applyPad();
+    setChips();
+  }
+  function releasePadButtons() {
+    padButtonControls.slice().forEach(function (control) { control.up(); });
+  }
+
   Array.prototype.forEach.call(padEl.querySelectorAll('button[data-key]'), function (btn) {
     var key = btn.getAttribute('data-key');
     var held = false;
+    padKeyNames[key] = true;
     var down = function (e) {
       e.preventDefault();
       if (held) return;
       held = true;
       btn.classList.add('held');
-      sendKey(key, 'keydown');
+      holdPadKey(key);
     };
     var up = function (e) {
       if (e) e.preventDefault();
       if (!held) return;
       held = false;
       btn.classList.remove('held');
-      sendKey(key, 'keyup');
+      releasePadKey(key);
     };
+    padButtonControls.push({ up: up });
     btn.addEventListener('touchstart', down, { passive: false });
     btn.addEventListener('touchend', up);
     btn.addEventListener('touchcancel', up);
@@ -598,6 +711,143 @@
     btn.addEventListener('mouseup', up);
     btn.addEventListener('mouseleave', up);
     btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  });
+
+  function cancelPadLongPress() {
+    if (longPressTimer) clearTimeout(longPressTimer);
+    longPressTimer = 0;
+    longPressOrigin = null;
+  }
+  function touchPoint(ev) {
+    var list = ev.touches && ev.touches.length ? ev.touches : ev.changedTouches;
+    if (list && list.length) {
+      return { x: Number(list[0].clientX) || 0, y: Number(list[0].clientY) || 0 };
+    }
+    if (typeof ev.clientX === 'number' && typeof ev.clientY === 'number') {
+      return { x: ev.clientX, y: ev.clientY };
+    }
+    return null;
+  }
+  function startPadLongPress(ev) {
+    lastTouchAt = Date.now();
+    if (ev.touches && ev.touches.length > 1) {
+      cancelPadLongPress();
+      return;
+    }
+    if (!padOn || !padAutoHidden || isPadTarget(ev.target)) return;
+    cancelPadLongPress();
+    longPressOrigin = touchPoint(ev);
+    longPressTimer = setTimeout(function () {
+      longPressTimer = 0;
+      longPressOrigin = null;
+      showPadAfterPhysicalEscape();
+    }, LONG_PRESS_MS);
+  }
+  function movePadLongPress(ev) {
+    if (ev.touches && ev.touches.length > 1) {
+      cancelPadLongPress();
+      return;
+    }
+    if (!longPressTimer || !longPressOrigin) return;
+    var point = touchPoint(ev);
+    if (point && (Math.abs(point.x - longPressOrigin.x) > 16 || Math.abs(point.y - longPressOrigin.y) > 16)) {
+      cancelPadLongPress();
+    }
+  }
+  document.addEventListener('touchstart', startPadLongPress, { passive: true });
+  document.addEventListener('touchmove', movePadLongPress, { passive: true });
+  document.addEventListener('touchend', cancelPadLongPress, { passive: true });
+  document.addEventListener('touchcancel', cancelPadLongPress, { passive: true });
+
+  function recentlyTouched() {
+    return Date.now() - lastTouchAt < TOUCH_MOUSE_GUARD_MS;
+  }
+  function onPhysicalPointerDown(ev) {
+    if (ev.pointerType === 'touch') {
+      lastTouchAt = Date.now();
+      startPadLongPress(ev);
+      return;
+    }
+    if (isPadTarget(ev.target)) return;
+    if (!ev.pointerType || ev.pointerType === 'mouse' || ev.pointerType === 'pen') hidePadForPhysicalInput();
+  }
+  function onPhysicalPointerMove(ev) {
+    if (ev.pointerType === 'touch') {
+      lastTouchAt = Date.now();
+      movePadLongPress(ev);
+      return;
+    }
+    if (isPadTarget(ev.target)) return;
+    if (ev.pointerType === 'mouse' || ev.pointerType === 'pen') hidePadForPhysicalInput();
+  }
+  function onPhysicalMouseDown(ev) {
+    if (isPadTarget(ev.target) || recentlyTouched()) return;
+    if (ev.sourceCapabilities && ev.sourceCapabilities.firesTouchEvents) return;
+    hidePadForPhysicalInput();
+  }
+  function onPhysicalMouseMove(ev) {
+    if (isPadTarget(ev.target) || recentlyTouched()) return;
+    if (ev.sourceCapabilities && ev.sourceCapabilities.firesTouchEvents) return;
+    hidePadForPhysicalInput();
+  }
+  document.addEventListener('pointerdown', onPhysicalPointerDown, true);
+  document.addEventListener('pointermove', onPhysicalPointerMove, true);
+  document.addEventListener('pointerup', function (ev) {
+    if (ev.pointerType === 'touch') cancelPadLongPress();
+  }, true);
+  document.addEventListener('pointercancel', function (ev) {
+    if (ev.pointerType === 'touch') cancelPadLongPress();
+  }, true);
+  document.addEventListener('mousedown', onPhysicalMouseDown, true);
+  document.addEventListener('mousemove', onPhysicalMouseMove, true);
+
+  function gamepadInputChanged(gamepad, index) {
+    var id = typeof gamepad.index === 'number' ? gamepad.index : index;
+    var previous = gamepadSnapshots[id] || { buttons: [], axes: [] };
+    var next = { buttons: [], axes: [] };
+    var used = false;
+    var buttons = gamepad.buttons || [];
+    for (var i = 0; i < buttons.length; i++) {
+      var button = buttons[i];
+      var value = typeof button === 'number' ? button : Number(button && button.value) || 0;
+      var pressed = typeof button === 'object' && !!(button && button.pressed);
+      if (pressed && value < 1) value = 1;
+      var active = pressed || value >= 0.5;
+      var old = previous.buttons[i] || { active: false, value: 0 };
+      if ((active && !old.active) || (active && old.active && Math.abs(value - old.value) >= 0.35)) used = true;
+      next.buttons[i] = { active: active, value: value };
+    }
+    var axes = gamepad.axes || [];
+    for (var j = 0; j < axes.length; j++) {
+      var axis = Number(axes[j]) || 0;
+      var axisActive = Math.abs(axis) >= 0.35;
+      var oldAxis = previous.axes[j] || { active: false, value: 0 };
+      if ((axisActive && !oldAxis.active) || (axisActive && oldAxis.active && Math.abs(axis - oldAxis.value) >= 0.35)) used = true;
+      next.axes[j] = { active: axisActive, value: axis };
+    }
+    gamepadSnapshots[id] = next;
+    return used;
+  }
+  function pollGamepads() {
+    if (typeof navigator.getGamepads !== 'function') return;
+    var gamepads;
+    try { gamepads = navigator.getGamepads(); } catch (e) { return; }
+    var seen = Object.create(null);
+    var used = false;
+    Array.prototype.forEach.call(gamepads || [], function (gamepad, index) {
+      if (!gamepad || gamepad.connected === false) return;
+      var id = typeof gamepad.index === 'number' ? gamepad.index : index;
+      seen[id] = true;
+      if (gamepadInputChanged(gamepad, index)) used = true;
+    });
+    Object.keys(gamepadSnapshots).forEach(function (id) {
+      if (!seen[id]) delete gamepadSnapshots[id];
+    });
+    if (used) hidePadForPhysicalInput();
+  }
+  window.addEventListener('gamepadconnected', pollGamepads);
+  window.addEventListener('gamepaddisconnected', function (ev) {
+    if (ev.gamepad && typeof ev.gamepad.index === 'number') delete gamepadSnapshots[ev.gamepad.index];
   });
 
   /* ---------------------------------------------------------------- *
@@ -945,6 +1195,10 @@
     applyResolution();
     applyPad();
     setChips();
+    if (typeof navigator.getGamepads === 'function') {
+      pollGamepads();
+      gamepadPollTimer = setInterval(pollGamepads, 100);
+    }
     fpsEl.classList.add('hidden');
 
     log('Hollow Knight web loader', 'stream=' + HKStream.VERSION, 'touch=' + isTouch());
