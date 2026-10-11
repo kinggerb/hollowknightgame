@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Dev dependencies for the tools/ test suites",
+  "devDependencies": {
+    "jsdom": "^30.1.2"
+  }
+}
