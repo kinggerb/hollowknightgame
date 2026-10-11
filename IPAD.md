@@ -76,13 +76,104 @@ first: as a home-screen web app Safari does not evict the site's storage after
   foreground and do not switch apps.
 * **Every run after that** – no download at all: the data is read back from disk
   in a few seconds.
+* **Graphics** – iPads start at **Balanced** (85 % render scale, 60 fps cap);
+  see [§5](#5-graphics--performance) for the levels and what to do when the tab
+  still dies mid-game.
 * **Storage** – the cached data lives in the origin's private file system
   (roughly 913 MB, plus saves). `Menu ▸ Clear cached game data` deletes it.
   Safari clears such data after 7 days without a visit unless the site is
   installed on the home screen, so the first load after a long break may
   download again.
 
-## 5. Touch controls
+## 5. Graphics & performance
+
+### What can and cannot be changed
+
+The game is a finished **Unity 2021.3 build**: a compiled wasm module plus 884 MB
+of data. Shaders, lights, particles and post effects live inside that blob, so
+they cannot be switched off from the web page — doing that would need the Unity
+project and a rebuild.
+
+What the page *can* change is how much work the browser asks for, which is the
+other half of the story: the reason the tab dies is that iPadOS jetsam-kills
+processes that hold too much memory, and the biggest thing a running game holds
+that the page controls is **how many pixels it draws, and how often**.
+
+### The four controls (Menu ▸ Graphics & performance)
+
+| Button | Cycles through |
+| --- | --- |
+| **Graphics** | High → Balanced → Smooth → Low → Potato (sets render scale *and* frame cap) |
+| **Frame cap** | off, 60, 45, 30 fps |
+| **Render scale** | 100 %, 85 %, 70 %, 55 %, 40 % of the screen's pixels |
+| **Auto-degrade** | on / off |
+
+| Preset | Render scale | Frame cap | Pixels drawn vs. High |
+| --- | --- | --- | --- |
+| High | 100 % | 60 | 100 % |
+| Balanced | 85 % | 60 | 72 % |
+| Smooth | 70 % | 45 | 49 % |
+| Low | 55 % | 30 | 30 % |
+| Potato | 40 % | 30 | 16 % |
+
+Touch devices start at **Balanced**; desktop starts at High. A lower render
+scale draws fewer pixels and the canvas is stretched back over the screen, so
+the picture gets softer but the GPU work, the video memory and the heat all
+drop with it.
+
+One-off overrides are handy for finding out what a device can take:
+
+```
+ipad.html?preset=low      ipad.html?fps=30      ipad.html?scale=0.5
+```
+
+### What the page does by itself
+
+* **Frame cap.** Unity drives itself from `requestAnimationFrame`, so the page
+  wraps rAF and releases the game loop on the first display refresh at or after
+  the target time. That matters more than it sounds: on a 120 Hz iPad an
+  *uncapped* game tries to draw 120 frames a second — twice the GPU and CPU
+  work of 60 fps for no visible gain.
+* **Auto-degrade.** If the measured frame rate stays under 80 % of the cap for
+  three seconds running, the page drops one level and says so in a toast. It
+  never raises the level by itself, and picking a level yourself clears the
+  counter.
+* **Crash memory.** While the game runs it writes a heartbeat to
+  `localStorage` every four seconds; leaving the page normally deletes it. A
+  heartbeat that is still there on the next visit means the tab was killed, so
+  **the next session starts one graphics step lower** instead of dying the same
+  way again — two crashes in a row start two steps lower. A tab killed while it
+  was *in the background* is ignored: iPadOS does that to every tab eventually
+  and it says nothing about the graphics level.
+* **Memory warning.** When the game's wasm heap passes ~1.6 GB the page says so
+  once. The heap is allowed to grow to 2 GB, but iPadOS kills a tab long before
+  that; a restart from a bench is cheaper than a kill.
+* **Recovery overlay.** If Safari drops the WebGL context, or the game stops
+  drawing for 25 seconds, an overlay offers a reload instead of leaving a
+  frozen canvas.
+* **Cheaper GL context.** No antialiasing, no alpha, no stencil (unless
+  compatibility mode is on), no low-latency presentation, and `low-power` on
+  touch devices.
+
+### If it still crashes mid-game
+
+1. Work down the presets — **Low**, then **Potato**. Potato draws a sixth of the
+   pixels of High.
+2. Close other tabs and apps. What matters is the budget of *this* tab, not the
+   free space on the device.
+3. Add the page to the home screen (*Share ▸ Add to Home Screen*): as a
+   home-screen app Safari gives it more headroom and does not evict its
+   storage after seven days.
+4. Rest at a bench and reload every hour or so. The heap only grows during a
+   session.
+5. The **Menu ▸ Stability** rows show the internal resolution, the measured
+   frame rate, the wasm heap size and what happened on the last session — those
+   four numbers are what to quote when asking for help.
+
+A 4 GB iPad is genuinely tight for this build: the game data alone is 884 MB of
+the tab's memory before anything is rendered.
+
+## 6. Touch controls
 
 The on-screen pad appears on touch devices (toggle it in the menu). Using a
 physical keyboard, mouse, or gamepad hides the pad so it does not cover the game;
@@ -107,7 +198,7 @@ WebGL build expects:
 
 A Bluetooth gamepad or keyboard connected to the iPad also works.
 
-## 6. Save editors (.dat / .dat.html)
+## 7. Save editors (.dat / .dat.html)
 
 Saves live in the game's native format (`user1.dat` … `user4.dat`), so online
 editors such as [hollowedit.com](https://hollowedit.com/) work with them:
@@ -125,27 +216,33 @@ editors such as [hollowedit.com](https://hollowedit.com/) work with them:
    the file name (`user3.dat.html` → slot 3, otherwise slot 1) and leaves other
    slots alone. Reload the page afterwards.
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | What to try |
 | --- | --- |
-| Tab disappears during "Loading into memory" | Close other tabs, retry – the game data is cached, so the retry skips the download. Lower **Render quality** in the menu. |
+| Tab disappears at random while playing | Set **Graphics** to Low, then Potato (Menu ▸ Graphics & performance). The next start begins a step lower on its own after each crash. Close other tabs and apps. |
+| Tab disappears during "Loading into memory" | Close other tabs, retry – the game data is cached, so the retry skips the download. Lower **Render scale** in the menu. |
+| Frozen picture, or a black canvas after the game was running | If the recovery overlay does not appear within ~30 s, reload. It is triggered by a lost WebGL context or 25 s without a frame. |
 | Black screen after the loading bar | Reload; check the log panel. Try **Compatibility mode** (turns the stencil buffer on) if graphics look wrong. |
 | "There is not enough free storage" | Free ~2 GB in *Settings ▸ General ▸ iPad Storage*; the merged file needs ~913 MB. |
 | No sound | Tap the screen once after the game starts (iOS requires a gesture). |
 | Downloads keep restarting | Leave the tab in the foreground; the loader resumes from the last byte written. |
-| Everything is slow | Render quality 70 % or 55 % in the menu, close other apps. |
+| Everything is slow | **Graphics** → Smooth or Low. Auto-degrade does this on its own when the frame rate stays low. |
+| The picture is soft or blurry | That is the render scale doing its job — raise **Graphics** a step if the frame rate allows. |
 
-The **Menu** button (top right) shows storage/capability details and a log;
-"Copy diagnostics" puts it on the clipboard if you want to report a problem.
+The **Menu** button (top right) shows the graphics and stability rows (internal
+resolution, frame rate, game memory, last session), storage/capability details
+and a log; "Copy diagnostics" puts it on the clipboard if you want to report a
+problem.
 
-## 8. Working on it
+## 9. Working on it
 
 ```bash
 node tools/test-hk-stream.mjs          # full: assembles the real 884 MB file
                                        # and checks it byte-for-byte (sha256)
 node tools/test-hk-stream.mjs --quick   # same suite with only the wasm chunks
 node tools/test-ipad-page.mjs           # DOM tests for pad auto-hide / key ownership
+                                       # and the graphics / crash-recovery logic
 node tools/test-save-import.mjs         # save codec + .dat.html import/export tests
 node tools/serve.mjs 8080               # static server with Range + wasm MIME
 ```
@@ -155,8 +252,13 @@ network requests), resume after an interrupted download, retries after broken
 parts, the RAM fallback, the worker message protocol, and that the part list in
 `ipad.html` still matches the files in `Build/`. The iPad page suite checks
 physical-input auto-hide, touch taps, Esc / long-press restore, gamepad input,
-and keyboard/touch key ownership. The save import suite checks the AES save
-codec against reference vectors and the `.dat.html` import flow in jsdom.
+and keyboard/touch key ownership — plus the graphics controls: render scale vs.
+canvas size, the frame limiter (capped frames are spaced out, uncapped ones are
+not), preset cycling and persistence, auto-degrade, crash detection from a stale
+heartbeat (and that a background kill does not count), a clean exit clearing the
+heartbeat, the heap warning and the lost-context overlay. The save import suite
+checks the AES save codec against reference vectors and the `.dat.html`
+import/export flow in jsdom.
 
 ### Files added
 
@@ -179,6 +281,11 @@ Unity still has to hold the ~884 MB data blob plus its own WebAssembly heap
 (32 MB at start, up to 2 GB as the game allocates) inside one tab. On an iPad
 that is a large but plausible footprint on iPadOS 18.2+ (the WebKit
 WebAssembly-memory bug that broke big builds was fixed there); a 4 GB iPad will
-still struggle. Making the game run comfortably on every iPad would require
-rebuilding the Unity project with a smaller heap / streamed asset bundles,
-which cannot be done from these files alone.
+still struggle.
+
+The page works with what a finished build leaves on the outside — pixels, frame
+rate, GPU context flags and recovery — so the levels in §5 are the whole of the
+"graphics settings" that exist here. Turning off shaders, lights or particle
+effects, or shipping smaller textures, means rebuilding the Unity project (a
+smaller heap, streamed asset bundles, `masterTextureLimit`), which cannot be
+done from these files alone.
