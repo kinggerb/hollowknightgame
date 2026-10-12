@@ -80,7 +80,8 @@ function createUnityInstance(e, r, n) {
                 }
             });
         return i.then(function(e) {
-            return e.parsedBody
+            var r = e.parsedBody;
+            return e.parsedBody = null, r
         }).catch(function(r) {
             var n = "Failed to download file " + c[e];
             "file:" == location.protocol ? t(n + ". Loading web pages via a file:// URL without a web server is not supported by this browser. Please use a local development web server to host Unity content, or use the Unity Build and Run option.", "error") : console.error(n)
@@ -126,26 +127,27 @@ function createUnityInstance(e, r, n) {
         });
         var e = l("dataUrl");
         c.preRun.push(function() {
-            c.addRunDependency("dataUrl"), e.then(function(e) {
-                var r = new DataView(e.buffer, e.byteOffset, e.byteLength),
-                    n = 0,
+            c.addRunDependency("dataUrl"), e.then(function(r) {
+                e = null;
+                var n = new DataView(r.buffer, r.byteOffset, r.byteLength),
+                    o = 0,
                     t = "UnityWebData1.0\0";
-                if (!String.fromCharCode.apply(null, e.subarray(n, n + t.length)) == t) throw "unknown data format";
-                n += t.length;
-                var o = r.getUint32(n, !0);
-                for (n += 4; n < o;) {
-                    var a = r.getUint32(n, !0);
-                    n += 4;
-                    var i = r.getUint32(n, !0);
-                    n += 4;
-                    var s = r.getUint32(n, !0);
-                    n += 4;
-                    var l = String.fromCharCode.apply(null, e.subarray(n, n + s));
-                    n += s;
-                    for (var d = 0, u = l.indexOf("/", d) + 1; u > 0; d = u, u = l.indexOf("/", d) + 1) c.FS_createPath(l.substring(0, d), l.substring(d, u - 1), !0, !0);
-                    c.FS_createDataFile(l, null, e.subarray(a, a + i), !0, !0, !0)
+                if (!String.fromCharCode.apply(null, r.subarray(o, o + t.length)) == t) throw "unknown data format";
+                o += t.length;
+                var a = n.getUint32(o, !0);
+                for (o += 4; o < a;) {
+                    var i = n.getUint32(o, !0);
+                    o += 4;
+                    var s = n.getUint32(o, !0);
+                    o += 4;
+                    var l = n.getUint32(o, !0);
+                    o += 4;
+                    var d = String.fromCharCode.apply(null, r.subarray(o, o + l));
+                    o += l;
+                    for (var u = 0, f = d.indexOf("/", u) + 1; f > 0; u = f, f = d.indexOf("/", u) + 1) c.FS_createPath(d.substring(0, u), d.substring(u, f - 1), !0, !0);
+                    c.FS_createDataFile(d, null, r.subarray(i, i + s), !0, !0, !0)
                 }
-                c.removeRunDependency("dataUrl")
+                r = null, n = null, delete c.downloadProgress.dataUrl, c.removeRunDependency("dataUrl")
             })
         })
     }
@@ -334,14 +336,14 @@ function createUnityInstance(e, r, n) {
                     if (u === s) return l;
                     if (u < s) return l.slice(0, u);
                     var e = new Uint8Array(u);
-                    e.set(l, 0);
-                    for (var r = c, n = 0; n < d.length; ++n) e.set(d[n], r), r += d[n].length;
-                    return e
+                    e.set(l, 0), l = null;
+                    for (var r = c, n = 0; n < d.length; ++n) e.set(d[n], r), r += d[n].length, d[n] = null;
+                    return d.length = 0, e
                 }
-                var a = "undefined" != typeof r.body ? r.body.getReader() : void 0,
-                    i = "undefined" != typeof r.headers.get("Content-Length"),
+                var i = !!r.headers.get("Content-Length"),
                     s = e(r, i),
-                    l = new Uint8Array(s),
+                    a = i && s > 0 && "undefined" != typeof r.body ? r.body.getReader() : void 0,
+                    l = new Uint8Array(s || 0),
                     d = [],
                     u = 0,
                     c = 0;
