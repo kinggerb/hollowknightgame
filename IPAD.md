@@ -303,6 +303,7 @@ node tools/test-ipad-page.mjs           # DOM tests for pad auto-hide / key owne
                                        # the graphics / crash-recovery logic and the
                                        # audio guard
 node tools/test-save-import.mjs         # save codec + .dat.html import/export tests
+node tools/test-framework-audio.mjs     # <audio> cleanup in Build/hktruffled.framework.js
 node tools/serve.mjs 8080               # static server with Range + wasm MIME
 ```
 
@@ -322,7 +323,37 @@ the canvas really shrinking at the two lowest levels, the lost-context overlay,
 and the audio guard relabelling a `play()` that rejects *or throws* with
 something Unity would otherwise rethrow. The save import suite
 checks the AES save codec against reference vectors and the `.dat.html`
-import/export flow in jsdom.
+import/export flow in jsdom. The framework audio suite runs the real Unity
+audio functions from `Build/hktruffled.framework.js` against mock media
+elements and checks that a stopped/replaced `<audio>` source is released.
+
+### Room-transition memory patches (Build/)
+
+iPadOS used to kill the tab after 3–5 `TransitionPoint` room loads. Three
+changes keep memory flat across rooms:
+
+* **`Build/hktruffled.wasm.part1` — one byte.** `GameManager.IsUnloadAssetsRequired`
+  (`func[17524]`, `wasmTable[17108]`, body at file offset `6527375`, 584 bytes)
+  compared memory usage against desktop limits (2.50 GB / 2.05 GB) that a
+  32-bit wasm heap never reaches, so it always returned `false` and room loads
+  never ran `Resources.UnloadUnusedAssets()`. Its return tail at offset
+  `6527956` is patched from `20 01 0b` (`local.get 1; end`) to `41 01 0b`
+  (`i32.const 1; end`), so every transition unloads unused assets. Because the
+  scene loader also forces GC whenever an unload is required, every transition
+  collects too. The limit constants and
+  `Platform.get_MaximumSceneTransitionsWithoutNonCriticalGarbageCollection`
+  (`func[598]`) are deliberately left alone: `0` there already means "never
+  skip GC". To revert, write `0x20` back at offset `6527956`.
+* **`Build/hktruffled.framework.js`.** `channel.disconnectSource` now clears
+  `src` and calls `load()` on a media-element source's `<audio>` (and also
+  cancels a pending delayed start and drops its own autoplay-blocked entry), so
+  WebKit frees each room's music/ambience decoder. `_JS_Sound_Play` logs the
+  caught `error` instead of throwing `ReferenceError: e is not defined`.
+* **`ipad.html`.** The periodic `cleanupMemory()` also calls the real IL2CPP
+  `Resources.UnloadUnusedAssets` (`Module.asm.Zi.get(46728)(0)`) and
+  `System.GC.Collect` (`Module.asm.Zi.get(56071)(0)`) through the exported
+  function table. `BUILD.id` was bumped so cached copies of the old wasm are
+  replaced (this also re-downloads the game data once).
 
 ### Files added
 
@@ -335,6 +366,7 @@ import/export flow in jsdom.
 | `tools/test-hk-stream.mjs` | Node test suite for the streaming loader |
 | `tools/test-ipad-page.mjs` | DOM tests for the touch pad and input handling |
 | `tools/test-save-import.mjs` | Node test suite for the save codec + import/export |
+| `tools/test-framework-audio.mjs` | Tests for the `<audio>` cleanup in the Unity framework |
 | `tools/fixtures/` | Reference save files/vectors for the codec tests |
 | `tools/serve.mjs` | Local static server (Range requests, correct MIME) |
 | `IPAD.md` | This document |

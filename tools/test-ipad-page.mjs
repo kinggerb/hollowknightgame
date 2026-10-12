@@ -475,6 +475,40 @@ test('a game heap above 1.4 GB starts a 5s corner reload countdown without warni
   }
 });
 
+test('memory cleanup calls the real IL2CPP UnloadUnusedAssets / GC.Collect through wasmTable (asm.Zi)', async () => {
+  const { dom, window } = await createPage();
+  try {
+    const calls = [];
+    const table = {
+      get(index) {
+        if (index === 46728) return (mi) => { calls.push(['UnloadUnusedAssets', mi]); return 0; };
+        if (index === 56071) return (mi) => { calls.push(['GC.Collect', mi]); };
+        throw new Error('unexpected wasmTable index ' + index);
+      },
+    };
+    window.unityInstance = { Module: { HEAPU8: { length: 600 * 1048576 }, asm: { Zi: table } } };
+    window.HKPerf.autoTick(60, true);
+    assert.equal(window.HKPerf.cleanupMemory(), true, 'the table entry points alone count as a cleanup');
+    assert.deepEqual(calls, [['UnloadUnusedAssets', 0], ['GC.Collect', 0]],
+      'UnloadUnusedAssets runs before GC.Collect, each with methodInfo = 0');
+
+    // A trap in one entry point must not stop the other
+    calls.length = 0;
+    table.get = (index) => {
+      if (index === 46728) return () => { throw new Error('unreachable'); };
+      return (mi) => { calls.push(['GC.Collect', mi]); };
+    };
+    assert.equal(window.HKPerf.cleanupMemory(), true);
+    assert.deepEqual(calls, [['GC.Collect', 0]]);
+
+    // No table, no legacy hooks -> nothing ran
+    window.unityInstance.Module.asm = {};
+    assert.equal(window.HKPerf.cleanupMemory(), false);
+  } finally {
+    dom.window.close();
+  }
+});
+
 test('a lost WebGL context offers a reload instead of leaving a frozen canvas', async () => {
   const { dom, window } = await createPage();
   try {
