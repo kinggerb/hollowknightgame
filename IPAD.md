@@ -177,16 +177,17 @@ ipad.html?preset=low      ipad.html?fps=30      ipad.html?scale=0.5
   graphics level. The streak is only cleared by a page that really got the game
   running, because Safari reloads the page by itself after a kill and that
   fresh start used to wipe the streak before the ladder had climbed.
-* **Memory warning, learned from the crash.** The page records the size of the
-  wasm heap at the moment the tab was killed, and the next session warns
-  relative to *that* number — 80 % of it is "get ready", 95 % is "stop now".
-  With nothing recorded yet the defaults are 1000 MB and 1400 MB, deliberately
-  early: being told to reload at a bench is much cheaper than being killed
-  mid-fight. The heap is allowed to grow to 2 GB, but iPadOS kills a tab long
-  before that. **Menu ▸ Stability** shows the heap, the tab total
-  (heap + the 884 MB of game data) and what the last crash cost, and once the
-  heap passes 1000 MB the fps chip in the corner shows it in GB so you can see
-  it climbing without opening the menu.
+* **Hard memory cap (1.4 GB) & periodic cleanup.** Instead of showing repeated
+  memory warning pop-ups, the heartbeat monitors `hb.heap` and triggers a clean
+  reload after a 5-second corner countdown (`Memory limit reached — reloading…`)
+  if the wasm heap exceeds 1400 MB (1.4 GB), preventing iPadOS jetsam kills.
+  Every 60 seconds of gameplay the page also calls `Module.asm._gc_collect()`
+  and `Module.asm._ResourceManager_UnloadUnusedAssets()` if present, and lower
+  graphics presets call `Module.asm._QualitySettings_SetTextureSize()` when
+  exported. **Menu ▸ Graphics & performance** still shows the heap, the tab
+  total and what the last crash cost, and once the heap passes 1000 MB the fps
+  chip in the corner shows it in GB so you can see it climbing without opening
+  the menu.
 * **Audio guard.** Unity calls `play()` on every sound it starts, and iPad
   Safari refuses most of those until you have touched the screen. The refusal
   can come back as `NotSupportedError` (Unity's log calls it

@@ -433,22 +433,43 @@ test('leaving the page normally clears the crash heartbeat', async () => {
   }
 });
 
-test('a game heap that grows towards the iPad limit warns once', async () => {
+test('a game heap above 1.4 GB starts a 5s corner reload countdown without warning pop-ups', async () => {
   const { dom, window } = await createPage();
   try {
+    let gcCalls = 0;
+    let unloadCalls = 0;
+    let texSizes = [];
     // only the byte length is read, so no real allocation is needed
-    window.unityInstance = { Module: { HEAPU8: { length: 1700 * 1048576 } } };
+    window.unityInstance = {
+      Module: {
+        HEAPU8: { length: 1700 * 1048576 },
+        asm: {
+          _gc_collect: () => { gcCalls++; },
+          _ResourceManager_UnloadUnusedAssets: () => { unloadCalls++; },
+          _QualitySettings_SetTextureSize: (sz) => { texSizes.push(sz); },
+        },
+      },
+    };
     assert.equal(window.HKPerf.heapMB(), 1700);
     window.HKPerf.autoTick(60, true);        // pretend the game is running
 
-    const toast = window.document.getElementById('toast');
-    window.HKPerf.checkMemory();
-    assert.match(toast.textContent, /1700 MB/, 'the warning names the heap size');
-    assert.ok(toast.classList.contains('show'));
+    // Periodic cleanup calls both wasm hooks when present
+    assert.equal(window.HKPerf.cleanupMemory(), true);
+    assert.equal(gcCalls, 1);
+    assert.equal(unloadCalls, 1);
 
-    toast.textContent = '';
-    window.HKPerf.checkMemory();
-    assert.equal(toast.textContent, '', 'the warning is only shown once');
+    // Lower graphics levels reduce texture size via the wasm hook
+    window.HKPerf.setScale(0.25);
+    assert.ok(texSizes.includes(256), 'Rock bottom sets texture size to 256');
+
+    const toast = window.document.getElementById('toast');
+    const memcap = window.document.getElementById('memcap');
+    window.HKPerf.writeHeartbeat();
+    assert.equal(toast.textContent, '', 'memory warning toast pop-ups are disabled');
+    assert.equal(toast.classList.contains('show'), false);
+    assert.match(memcap.textContent, /Memory limit reached — reloading… \(5s\)/,
+      'heartbeat starts a 5-second reload countdown in the corner');
+    assert.equal(memcap.classList.contains('hidden'), false);
   } finally {
     dom.window.close();
   }
