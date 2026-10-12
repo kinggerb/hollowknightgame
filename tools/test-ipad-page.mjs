@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const html = await readFile(path.join(here, '..', 'ipad.html'), 'utf8');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function createPage({ touch = true, gamepad = null, storage = null } = {}) {
+async function createPage({ touch = true, gamepad = null, storage = null, mediaPlay = null } = {}) {
   const jsdomErrors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (error) => jsdomErrors.push(error));
@@ -39,6 +39,9 @@ async function createPage({ touch = true, gamepad = null, storage = null } = {})
           secure: true, workers: false,
         }),
       };
+      // Replaces jsdom's "not implemented" play() before the page script
+      // runs, so the audio guard patches this stub rather than jsdom's.
+      if (mediaPlay) window.HTMLMediaElement.prototype.play = mediaPlay;
       if (gamepad) {
         Object.defineProperty(window.navigator, 'getGamepads', {
           configurable: true,
@@ -325,7 +328,8 @@ test('the graphics button walks the presets and remembers the choice', async () 
   try {
     const button = window.document.getElementById('perfBtn');
     assert.match(button.textContent, /Graphics: Balanced/, 'touch devices start at Balanced');
-    const ids = window.HKPerf.presets();
+    // jsdom hands an array-like back across the boundary, so copy it first.
+    const ids = Array.from(window.HKPerf.presets());
 
     clickButton(window, 'perfBtn');
     assert.match(button.textContent, /Graphics: Smooth/);
@@ -408,6 +412,18 @@ test('leaving the page normally clears the crash heartbeat', async () => {
   try {
     assert.equal(window.HKPerf.lastSession().crashed, true);
     window.localStorage.setItem('hk.heartbeat', heartbeat());
+
+    // Safari reloads a page it killed, and that fresh start is not a clean
+    // exit: before the game boots the streak has to survive it, or the
+    // ladder can never climb past a single step.
+    window.dispatchEvent(new window.Event('pagehide'));
+    assert.equal(window.localStorage.getItem('hk.heartbeat'), null);
+    assert.equal(window.localStorage.getItem('hk.crashStreak'), '1',
+      'a reload before the game booted leaves the crash streak alone');
+
+    // Once the game is running, leaving really is a clean exit.
+    window.localStorage.setItem('hk.heartbeat', heartbeat());
+    window.HKPerf.autoTick(60, true);
     window.dispatchEvent(new window.Event('pagehide'));
     assert.equal(window.localStorage.getItem('hk.heartbeat'), null);
     assert.equal(window.localStorage.getItem('hk.crashStreak'), '0');
@@ -450,6 +466,95 @@ test('a lost WebGL context offers a reload instead of leaving a frozen canvas', 
 
     clickButton(window, 'recoverWait');
     assert.equal(overlay.classList.contains('hidden'), true, '“keep waiting” dismisses it');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('the audio guard relabels a NotSupportedError rejection as NotAllowedError', async () => {
+  const { dom, window } = await createPage({
+    mediaPlay: () => Promise.reject(Object.assign(new Error('nope'), { name: 'NotSupportedError' })),
+  });
+  try {
+    const audio = window.document.createElement('audio');
+    let caught = null;
+    await audio.play().catch((error) => { caught = error; });
+    assert.ok(caught, 'the failure is still reported, not silently swallowed');
+    assert.equal(caught.name, 'NotAllowedError',
+      'Unity only retries NotAllowedError; anything else is rethrown and kills the game');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('the audio guard catches a play() that throws outright', async () => {
+  const { dom, window } = await createPage({
+    mediaPlay: () => { throw Object.assign(new Error('boom'), { name: 'NotSupportedError' }); },
+  });
+  try {
+    const audio = window.document.createElement('audio');
+    let caught = null;
+    await audio.play().catch((error) => { caught = error; });
+    assert.ok(caught, 'a synchronous throw becomes a rejection, not an exception');
+    assert.equal(caught.name, 'NotAllowedError');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('the crash ladder reaches the lowest level, and remembers the heap it died at', async () => {
+  const { dom, window } = await createPage({
+    storage: { 'hk.heartbeat': heartbeat({ heap: 1500 }) },
+  });
+  try {
+    assert.equal(window.HKPerf.lastSession().crashed, true, 'a stale heartbeat means the tab was killed');
+    assert.equal(window.localStorage.getItem('hk.crashHeap'), '1500',
+      'the heap size it died at is remembered for the next warning level');
+    assert.equal(window.HKPerf.settings().presetId, 'smooth', 'one crash starts one step lower');
+
+    // Drive auto-degrade with a hopeless frame rate (force mode clears the
+    // cooldowns the real sampler would impose).
+    for (let i = 0; i < 60 && window.HKPerf.settings().presetId !== 'rock_bottom'; i++) {
+      window.HKPerf.autoTick(6, true);
+    }
+    assert.equal(window.HKPerf.settings().presetId, 'rock_bottom', 'it walks all the way down');
+    assert.equal(window.HKPerf.settings().scale, 0.25);
+    assert.equal(window.HKPerf.settings().fps, 24);
+
+    // Below the last preset there is still the frame cap; the render scale
+    // itself never goes under the minimum.
+    for (let i = 0; i < 12; i++) window.HKPerf.autoTick(6, true);
+    assert.equal(window.HKPerf.settings().fps, 20, 'the cap drops to 20 fps');
+    assert.equal(window.HKPerf.settings().scale, 0.25, 'and the scale stops at the floor');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('the lowest levels really do shrink the canvas', async () => {
+  const { dom, window } = await createPage();
+  try {
+    const canvas = window.document.getElementById('unity-canvas');
+    const walkTo = (id) => {
+      for (let i = 0; i <= Array.from(window.HKPerf.presets()).length; i++) {
+        if (window.HKPerf.settings().presetId === id) return;
+        clickButton(window, 'perfBtn');
+      }
+    };
+
+    walkTo('potato');
+    assert.equal(window.HKPerf.settings().presetId, 'potato');
+    const potato = { w: canvas.width, h: canvas.height };
+
+    walkTo('rock_bottom');
+    assert.equal(window.HKPerf.settings().presetId, 'rock_bottom');
+    const bottom = { w: canvas.width, h: canvas.height };
+
+    assert.ok(bottom.w < potato.w && bottom.h < potato.h,
+      `rock bottom (${bottom.w}×${bottom.h}) must be smaller than potato (${potato.w}×${potato.h})`);
+    assert.equal(bottom.w, Math.round(window.innerWidth * 0.25),
+      'the resolution floor must not clamp the lowest level back up');
+    assert.equal(bottom.h, Math.round(window.innerHeight * 0.25));
   } finally {
     dom.window.close();
   }

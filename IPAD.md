@@ -103,9 +103,9 @@ that the page controls is **how many pixels it draws, and how often**.
 
 | Button | Cycles through |
 | --- | --- |
-| **Graphics** | High → Balanced → Smooth → Low → Potato (sets render scale *and* frame cap) |
-| **Frame cap** | off, 60, 45, 30 fps |
-| **Render scale** | 100 %, 85 %, 70 %, 55 %, 40 % of the screen's pixels |
+| **Graphics** | High → Balanced → Smooth → Low → Potato → Minimum → Rock bottom (sets render scale *and* frame cap) |
+| **Frame cap** | off, 60, 45, 30, 24, 20 fps |
+| **Render scale** | 100 %, 85 %, 70 %, 55 %, 40 %, 30 %, 25 % of the screen's pixels |
 | **Auto-degrade** | on / off |
 
 | Preset | Render scale | Frame cap | Pixels drawn vs. High |
@@ -115,11 +115,15 @@ that the page controls is **how many pixels it draws, and how often**.
 | Smooth | 70 % | 45 | 49 % |
 | Low | 55 % | 30 | 30 % |
 | Potato | 40 % | 30 | 16 % |
+| Minimum | 30 % | 30 | 9 % |
+| Rock bottom | 25 % | 24 | 6 % |
 
 Touch devices start at **Balanced**; desktop starts at High. A lower render
 scale draws fewer pixels and the canvas is stretched back over the screen, so
 the picture gets softer but the GPU work, the video memory and the heat all
-drop with it.
+drop with it. The two lowest levels are ugly on purpose: they exist for
+iPads that still die at Potato, where drawing a sixteenth of the pixels is
+the difference between a session that survives and one that does not.
 
 One-off overrides are handy for finding out what a device can take:
 
@@ -137,17 +141,33 @@ ipad.html?preset=low      ipad.html?fps=30      ipad.html?scale=0.5
 * **Auto-degrade.** If the measured frame rate stays under 80 % of the cap for
   three seconds running, the page drops one level and says so in a toast. It
   never raises the level by itself, and picking a level yourself clears the
-  counter.
+  counter. Below Rock bottom there is still room: the frame cap goes 24 → 20
+  fps and the render scale keeps shrinking in steps of 10 % down to 25 %.
 * **Crash memory.** While the game runs it writes a heartbeat to
   `localStorage` every four seconds; leaving the page normally deletes it. A
   heartbeat that is still there on the next visit means the tab was killed, so
   **the next session starts one graphics step lower** instead of dying the same
   way again — two crashes in a row start two steps lower. A tab killed while it
   was *in the background* is ignored: iPadOS does that to every tab eventually
-  and it says nothing about the graphics level.
-* **Memory warning.** When the game's wasm heap passes ~1.6 GB the page says so
-  once. The heap is allowed to grow to 2 GB, but iPadOS kills a tab long before
-  that; a restart from a bench is cheaper than a kill.
+  and it says nothing about the graphics level. The streak is only cleared by
+  a *clean exit of a running game*: Safari reloads a page it killed, and that
+  fresh start must not wipe the counter before the ladder has climbed.
+* **Memory warning, learned from the crash.** When the game's wasm heap passes
+  the warning level the page says so once. The heap is allowed to grow to 2 GB,
+  but iPadOS kills a tab long before that, and where *this* iPad's line is can
+  only be measured: after a crash the page remembers the heap size it died at
+  and warns at 80 % of it (and alarms at 95 %) from then on. With nothing
+  learned yet it warns at 1000 MB and alarms at 1400 MB. A restart from a bench
+  is cheaper than a kill.
+* **Audio guard.** On iPadOS Safari `HTMLMediaElement.play()` sometimes rejects
+  with `NotSupportedError` instead of the `NotAllowedError` every other browser
+  reports. Unity only handles `NotAllowedError`, rethrows everything else, and
+  the rejection reaches the loader's `unhandledrejection` handler — which stops
+  the game mid-run, sometimes an hour in. The page relabels the error as
+  `NotAllowedError` so Unity takes its own retry path, swallows a rejected
+  `AudioContext.resume()`, and plays a 0.1 s clip of generated silence inside
+  the first real tap so iOS unlocks media at all. An element that fails eight
+  times in a row is left alone instead of being re-queued on every tap.
 * **Recovery overlay.** If Safari drops the WebGL context, or the game stops
   drawing for 25 seconds, an overlay offers a reload instead of leaving a
   frozen canvas.
@@ -157,8 +177,9 @@ ipad.html?preset=low      ipad.html?fps=30      ipad.html?scale=0.5
 
 ### If it still crashes mid-game
 
-1. Work down the presets — **Low**, then **Potato**. Potato draws a sixth of the
-   pixels of High.
+1. Work down the presets — **Low**, then **Potato**, and if it still dies,
+   **Minimum** and **Rock bottom**. Rock bottom draws a sixteenth of the pixels
+   of High.
 2. Close other tabs and apps. What matters is the budget of *this* tab, not the
    free space on the device.
 3. Add the page to the home screen (*Share ▸ Add to Home Screen*): as a
@@ -167,8 +188,9 @@ ipad.html?preset=low      ipad.html?fps=30      ipad.html?scale=0.5
 4. Rest at a bench and reload every hour or so. The heap only grows during a
    session.
 5. The **Menu ▸ Stability** rows show the internal resolution, the measured
-   frame rate, the wasm heap size and what happened on the last session — those
-   four numbers are what to quote when asking for help.
+   frame rate, the wasm heap size, the tab total (heap + the 884 MB of game
+   data), the heap size the tab last died at, and what happened on the last
+   session — those numbers are what to quote when asking for help.
 
 A 4 GB iPad is genuinely tight for this build: the game data alone is 884 MB of
 the tab's memory before anything is rendered.
@@ -220,7 +242,9 @@ editors such as [hollowedit.com](https://hollowedit.com/) work with them:
 
 | Symptom | What to try |
 | --- | --- |
-| Tab disappears at random while playing | Set **Graphics** to Low, then Potato (Menu ▸ Graphics & performance). The next start begins a step lower on its own after each crash. Close other tabs and apps. |
+| `NotSupportedError` / `jsAudioPlayPendingBlockedAudio` in the log, or the game stops with sound queued | iOS refused `play()`. The page relabels that as `NotAllowedError` so Unity retries it instead of dying (§5, *Audio guard*). If the log still shows it, tap the screen once, and check that the iPad is not muted / on a locked orientation with the ringer switch on. Reload if the game stopped anyway. |
+| The tab simply vanishes — no error, no overlay, Safari reloads the page | That is iPadOS jetsam, not a JavaScript error: it looks like a fresh load with a "last session stopped unexpectedly" toast. Work down to **Minimum** / **Rock bottom** (§5), close other tabs and apps, and use the home-screen shortcut. The **Stability** rows quote the heap it died at. |
+| Tab disappears at random while playing | Set **Graphics** to Low, Potato, then Rock bottom (Menu ▸ Graphics & performance). The next start begins a step lower on its own after each crash. Close other tabs and apps. |
 | Tab disappears during "Loading into memory" | Close other tabs, retry – the game data is cached, so the retry skips the download. Lower **Render scale** in the menu. |
 | Frozen picture, or a black canvas after the game was running | If the recovery overlay does not appear within ~30 s, reload. It is triggered by a lost WebGL context or 25 s without a frame. |
 | Black screen after the loading bar | Reload; check the log panel. Try **Compatibility mode** (turns the stencil buffer on) if graphics look wrong. |
@@ -256,7 +280,10 @@ and keyboard/touch key ownership — plus the graphics controls: render scale vs
 canvas size, the frame limiter (capped frames are spaced out, uncapped ones are
 not), preset cycling and persistence, auto-degrade, crash detection from a stale
 heartbeat (and that a background kill does not count), a clean exit clearing the
-heartbeat, the heap warning and the lost-context overlay. The save import suite
+heartbeat, the crash ladder walking down to Rock bottom, the heap warning and
+the lost-context overlay — and the audio guard (a `play()` that rejects or
+throws is relabelled as `NotAllowedError` instead of killing the game). The save
+import suite
 checks the AES save codec against reference vectors and the `.dat.html`
 import/export flow in jsdom.
 
