@@ -258,7 +258,12 @@ console.log('hk-stream version ' + HKStream.VERSION);
 console.log('temp dir: ' + tmpRoot);
 
 const wasmSizes = await readPartSizes('hktruffled.wasm', 2);
-const dataSizes = QUICK ? null : await readPartSizes('hktruffled.data', 45);
+async function countParts(prefix) {
+  const names = await fsp.readdir(path.join(repo, 'Build'));
+  return names.filter((n) => new RegExp('^' + prefix.replace(/\./g, '\\.') + '\\.part\\d+$').test(n)).length;
+}
+const DATA_PARTS = QUICK ? 0 : await countParts('hktruffled.data');
+const dataSizes = QUICK ? null : await readPartSizes('hktruffled.data', DATA_PARTS);
 const dataTotal = dataSizes ? dataSizes.reduce((a, b) => a + b, 0) : 0;
 
 section('wasm chunks (2 parts) — OPFS path, byte exactness');
@@ -551,7 +556,7 @@ section('ipad.html manifest matches the Build/ folder');
 }
 
 if (!QUICK) {
-  section('full data file (45 parts, ' + HKStream.mb(dataTotal) + ') — end to end');
+  section('full data file (' + DATA_PARTS + ' parts, ' + HKStream.mb(dataTotal) + ') — end to end');
   {
     const opfs = makeOpfs(path.join(tmpRoot, 'opfs-data'));
     setGlobal('navigator', { storage: opfs.navigatorStorage });
@@ -602,7 +607,7 @@ if (!QUICK) {
     const t0 = Date.now();
     let lastLog = 0;
     const ds = await HKStream.ensureDataset({
-      parts: partList('hktruffled.data', 45, dataSizes),
+      parts: partList('hktruffled.data', DATA_PARTS, dataSizes),
       expectedSize: dataTotal,
       cacheKey: 'hktruffled.data',
       buildId: 'test-data-1',
@@ -626,7 +631,7 @@ if (!QUICK) {
       path.join(repo, 'Build'),
       dataSizes.map((_, i) => 'hktruffled.data.part' + (i + 1))
     );
-    ok(ha === hb, 'sha256 matches the plain concatenation of the 45 parts');
+    ok(ha === hb, 'sha256 matches the plain concatenation of the ' + DATA_PARTS + ' parts');
 
     // Verify the UnityWebData table of contents is intact.
     // Layout: "UnityWebData1.0\0" (16 bytes), uint32 dataStart, then
@@ -668,7 +673,7 @@ if (!QUICK) {
     section('cache reuse for the data file');
     let requested = 0;
     const dsCached = await HKStream.ensureDataset({
-      parts: partList('hktruffled.data', 45, dataSizes),
+      parts: partList('hktruffled.data', DATA_PARTS, dataSizes),
       expectedSize: dataTotal,
       cacheKey: 'hktruffled.data',
       buildId: 'test-data-1',
@@ -684,7 +689,7 @@ if (!QUICK) {
 
     section('build id change invalidates the cache');
     const dsNew = await HKStream.ensureDataset({
-      parts: partList('hktruffled.data', 45, dataSizes),
+      parts: partList('hktruffled.data', DATA_PARTS, dataSizes),
       expectedSize: dataTotal,
       cacheKey: 'hktruffled.data',
       buildId: 'test-data-2',
