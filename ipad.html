@@ -541,6 +541,8 @@
    * Audio unlock (iOS refuses to start audio without a user gesture)
    * ---------------------------------------------------------------- */
   function installAudioUnlock() {
+    if (self.__hkAudioUnlockInstalled) return;   // start() may call this again
+    self.__hkAudioUnlockInstalled = true;
     var contexts = [];
     ['AudioContext', 'webkitAudioContext'].forEach(function (name) {
       var Orig = window[name];
@@ -569,7 +571,7 @@
         }
       } catch (e) {}
     };
-    ['touchend', 'pointerup', 'mousedown', 'keydown'].forEach(function (ev) {
+    ['touchend', 'pointerup', 'mousedown', 'keydown', 'click'].forEach(function (ev) {
       document.addEventListener(ev, unlock, { passive: true });
     });
     log('audio unlock armed (' + contexts.length + ' contexts created so far)');
@@ -1044,7 +1046,10 @@
     var killedWhilePlaying = hb.visible !== false;
     // Remember how big the heap was when the tab died, so the next session
     // warns against this device's real ceiling instead of a guess.
-    if (killedWhilePlaying && hb.heap > 0) writeStore(CRASH_HEAP_KEY, String(Math.round(hb.heap)));
+    if (killedWhilePlaying && hb.heap > 0) {
+      writeStore(CRASH_HEAP_KEY, String(Math.round(hb.heap)));
+      log('learned: this iPad killed the tab at a heap of ' + Math.round(hb.heap) + ' MB');
+    }
     var streak = parseInt(readStore(STREAK_KEY) || '0', 10) || 0;
     streak = killedWhilePlaying ? Math.min(PRESETS.length - 1, streak + 1) : 0;
     writeStore(STREAK_KEY, String(streak));
@@ -2100,6 +2105,11 @@
     errEl.classList.add('hidden');
     subEl.classList.add('hidden');
     notesEl.classList.remove('hidden');
+    // This runs inside the tap on Start, which is the first gesture iOS will
+    // accept for media — spend it on the silent clip instead of waiting for
+    // the next tap, which may not come for minutes (or at all on a reload
+    // that goes straight back into the game).
+    primeMediaPlayback();
     installAudioUnlock();
     keepAwake();
     try {

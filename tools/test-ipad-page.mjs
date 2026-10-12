@@ -535,6 +535,7 @@ test('the crash ladder reaches the lowest level, and remembers the heap it died 
     const w = second.window;
     assert.equal(w.HKPerf.lastSession().crashed, true);
     assert.equal(w.localStorage.getItem('hk.crashHeap'), '1700', 'the heap it died at is remembered');
+    assert.equal(w.HKPerf.settings().presetId, 'smooth', 'one crash starts the next session a step lower');
 
     const limits = w.HKPerf.memoryLimits();
     assert.equal(limits.crashHeap, 1700);
