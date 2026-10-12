@@ -243,7 +243,7 @@
    * ---------------------------------------------------------------- */
   var PART = 20866662; // size of every chunk except the last one of each file
   var BUILD = {
-    id: 'hk-webgl-2026-10-11',
+    id: 'hk-webgl-2026-10-12', // bumped: patched wasm (IsUnloadAssetsRequired) must replace OPFS copies
     buildDir: 'Build/',
     loader: 'Build/hktruffled.loader.js',
     framework: 'Build/hktruffled.framework.js',
@@ -940,6 +940,35 @@
       }
     } catch (e) {
       logError('UnloadUnusedAssets failed: ' + ((e && e.message) || e));
+    }
+    // The real IL2CPP entry points, reached through the exported function
+    // table (Module.asm.Zi = wasmTable; Module.asm.Ai is the memory). Indices
+    // come from the Il2CppCodeGenModule tables of Build/hktruffled.wasm:
+    //   46728 -> UnityEngine.Resources.UnloadUnusedAssets(methodInfo)  (func 8417)
+    //   56071 -> System.GC.Collect(methodInfo)                         (func 15581)
+    // (17462 -> GCManager.Collect, which just forwards to System.GC.Collect.)
+    // This runs from a timer between frames, so no managed frames are on the
+    // wasm stack while it collects.
+    var table = Module.asm.Zi;
+    if (table && typeof table.get === 'function') {
+      try {
+        var unloadUnusedAssets = table.get(46728);
+        if (typeof unloadUnusedAssets === 'function') {
+          unloadUnusedAssets(0);
+          ran = true;
+        }
+      } catch (e) {
+        logError('Resources.UnloadUnusedAssets (wasmTable 46728) failed: ' + ((e && e.message) || e));
+      }
+      try {
+        var gcCollect = table.get(56071);
+        if (typeof gcCollect === 'function') {
+          gcCollect(0);
+          ran = true;
+        }
+      } catch (e) {
+        logError('System.GC.Collect (wasmTable 56071) failed: ' + ((e && e.message) || e));
+      }
     }
     if (ran) log('memory cleanup: ran GC / UnloadUnusedAssets');
     return ran;

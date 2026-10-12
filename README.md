@@ -28,6 +28,7 @@ see **[IPAD.md §5](IPAD.md#5-graphics--performance)**.
 * `tools/test-hk-stream.mjs` — test suite: `node tools/test-hk-stream.mjs`
 * `tools/test-save-import.mjs` — save import/codec tests: `node tools/test-save-import.mjs`
 * `tools/test-ipad-page.mjs` — DOM tests: `node tools/test-ipad-page.mjs`
+* `tools/test-framework-audio.mjs` — framework audio cleanup tests: `node tools/test-framework-audio.mjs`
 
 Notes from the original port:
 
