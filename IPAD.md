@@ -12,7 +12,7 @@ The game is shipped as 47 chunk files:
 
 | file | parts | size |
 | --- | --- | --- |
-| `Build/hktruffled.data.part1..45` | 45 | 884 MB (926,889,798 bytes) |
+| `Build/hktruffled.data.part1..32` | 32 | 659 MB (659,321,108 bytes; was 45 parts / 926,889,798 bytes before the cutscene videos were replaced with placeholders, see §5) |
 | `Build/hktruffled.wasm.part1..2` | 2 | 28.9 MB (30,257,265 bytes) |
 
 The old pages built the game data **in RAM**:
@@ -38,7 +38,7 @@ the tab simply disappears.
    using `FileSystemSyncAccessHandle`. Peak RAM during the download: a few MB.
 2. **Keeps the merged file** – later loads (and retries after a crash) skip the
    download completely. Incomplete downloads resume from the byte they reached.
-3. **Hands Unity one file-backed blob URL** – the ~884 MB ArrayBuffer Unity must
+3. **Hands Unity one file-backed blob URL** – the ~659 MB ArrayBuffer Unity must
    allocate is then the only big allocation left in the tab, instead of the
    fourth copy of it.
 4. **iPad-specific behaviour** – viewport/zoom/gesture handling, wake lock while
@@ -71,7 +71,7 @@ first: as a home-screen web app Safari does not evict the site's storage after
 
 ## 4. What to expect
 
-* **First run** – ~884 MB + ~29 MB download (a few minutes on wifi), written to
+* **First run** – ~659 MB + ~29 MB download (a few minutes on wifi), written to
   disk as it arrives. Then Unity copies the data into memory ("Loading into
   memory — x %"). That last phase is the memory-hungry one; keep the tab in the
   foreground and do not switch apps.
@@ -88,9 +88,28 @@ first: as a home-screen web app Safari does not evict the site's storage after
 
 ## 5. Graphics & performance
 
+### Cutscene videos replaced with placeholders
+
+The shipped data no longer contains the cutscene videos. The original archive
+had 236 entries; 229 of them were `sharedassets*.resource` files holding MP4 or
+WebM video (267,760,363 bytes, about 263 MiB), and they made up one contiguous
+run between the game data and the metadata. Each video entry was replaced with
+the same tiny placeholder: a valid 2×2 black MP4 of 837 bytes, starting with an
+`ftyp` box.
+
+| | before | after |
+| --- | --- | --- |
+| cutscene video (229 entries) | 267,760,363 bytes | 229 × 837 bytes (191,673 bytes) |
+| `hktruffled.data` total | 926,889,798 bytes (45 parts) | 659,321,108 bytes (32 parts) |
+
+The index was kept as it is, with the sizes and offsets of the replaced entries
+and of the metadata after them updated, so the Unity runtime still finds every
+file it asks for. The game runs without its cutscenes; the videos play as
+black frames.
+
 ### What can and cannot be changed
 
-The game is a finished **Unity 2021.3 build**: a compiled wasm module plus 884 MB
+The game is a finished **Unity 2021.3 build**: a compiled wasm module plus 659 MB
 of data. Shaders, lights, particles and post effects live inside that blob, so
 they cannot be switched off from the web page — doing that would need the Unity
 project and a rebuild.
@@ -206,7 +225,7 @@ ipad.html?preset=low      ipad.html?fps=30      ipad.html?scale=0.5
    last crash cost and what happened on the last session — those numbers are
    what to quote when asking for help.
 
-A 4 GB iPad is genuinely tight for this build: the game data alone is 884 MB of
+A 4 GB iPad is genuinely tight for this build: the game data alone is 659 MB of
 the tab's memory before anything is rendered.
 
 ## 6. Touch controls
@@ -276,7 +295,7 @@ clipboard if you want to report a problem.
 ## 9. Working on it
 
 ```bash
-node tools/test-hk-stream.mjs          # full: assembles the real 884 MB file
+node tools/test-hk-stream.mjs          # full: assembles the real 659 MB file
                                        # and checks it byte-for-byte (sha256)
 node tools/test-hk-stream.mjs --quick   # same suite with only the wasm chunks
 node tools/test-ipad-page.mjs           # DOM tests for pad auto-hide / key ownership,
@@ -321,7 +340,7 @@ import/export flow in jsdom.
 
 ### What is still a limit of the build itself
 
-Unity still has to hold the ~884 MB data blob plus its own WebAssembly heap
+Unity still has to hold the ~659 MB data blob plus its own WebAssembly heap
 (32 MB at start, up to 2 GB as the game allocates) inside one tab. On an iPad
 that is a large but plausible footprint on iPadOS 18.2+ (the WebKit
 WebAssembly-memory bug that broke big builds was fixed there); a 4 GB iPad will
