@@ -16,14 +16,18 @@ touch controls and troubleshooting.
   editor downloads (hollowedit.com etc.), plain JSON or base64 saves
 
 Graphics & stability on iPad — **Menu ▸ Graphics & performance** in the game:
-five levels (High → Potato) that set the render scale and the frame cap at the
-same time, auto-degrade when the frame rate stays low, and a session that gets
-killed starts the next one a step lower on its own. The build's own shaders and
-effects are inside the compiled Unity data and cannot be changed from the page;
+seven levels (High → Rock bottom) that set the render scale and the frame cap at
+the same time, auto-degrade when the frame rate stays low, and a session that
+gets killed starts the next one a step lower on its own and warns earlier once
+it knows the heap size it died at. An audio guard keeps iOS's "no sound before
+you tap" refusals from turning into an unhandled rejection that kills the game.
+The build's own shaders and effects are inside the compiled Unity data and
+cannot be changed from the page;
 see **[IPAD.md §5](IPAD.md#5-graphics--performance)**.
 * `tools/serve.mjs` — local server: `node tools/serve.mjs 8080`
 * `tools/test-hk-stream.mjs` — test suite: `node tools/test-hk-stream.mjs`
 * `tools/test-save-import.mjs` — save import/codec tests: `node tools/test-save-import.mjs`
+* `tools/test-ipad-page.mjs` — DOM tests: `node tools/test-ipad-page.mjs`
 
 Notes from the original port:
 
