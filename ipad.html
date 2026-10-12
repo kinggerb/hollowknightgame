@@ -369,6 +369,175 @@
   }
 
   /* ---------------------------------------------------------------- *
+   * Audio guard: a refused play() must not be allowed to kill the game
+   * --------------------------------------------------------------------
+   * Unity calls play() on every media element it creates. On iPad Safari
+   * that promise can reject with `NotSupportedError` — the
+   * `jsAudioPlayPendingBlockedAudio` path, where the element is not broken
+   * but merely queued behind the gesture requirement. Unity only recognises
+   * `NotAllowedError`, so anything else is rethrown, surfaces as an
+   * unhandled rejection, and the loader's rejection handler kills the game
+   * mid-run. Relabelling the rejection puts Unity back on its own retry
+   * path, which is the one that waits for a gesture and then plays.
+   * ---------------------------------------------------------------- */
+  var MAX_AUDIO_RETRIES = 8;
+
+  // `DOMError` was removed from the web platform and never shipped in Safari,
+  // so the object that carries `.name === 'NotAllowedError'` is a
+  // DOMException. Fall back to a plain Error if even that is missing.
+  function blockedAudioError(detail) {
+    var message = 'audio is blocked until you tap the screen' + (detail ? ' (' + detail + ')' : '');
+    try {
+      if (typeof DOMException === 'function') return new DOMException(message, 'NotAllowedError');
+    } catch (e) { /* fall through */ }
+    var err = new Error(message);
+    try { err.name = 'NotAllowedError'; } catch (e2) {}
+    return err;
+  }
+
+  function noteAudioFailure(name) {
+    self.__hkAudioFails = (self.__hkAudioFails || 0) + 1;
+    if (self.__hkAudioFails === 1 || self.__hkAudioFails === MAX_AUDIO_RETRIES) {
+      log('audio guard: play() refused with ' + (name || 'an unknown error') +
+          ', relabelled as NotAllowedError (' + self.__hkAudioFails + ' of ' + MAX_AUDIO_RETRIES + ')');
+    }
+    return self.__hkAudioFails;
+  }
+
+  function installAudioGuards() {
+    var media = (typeof HTMLMediaElement !== 'undefined' && HTMLMediaElement.prototype) || null;
+    if (media && !self.__hkPlayPatched && typeof media.play === 'function') {
+      self.__hkPlayPatched = true;
+      var rawPlay = media.play;
+      media.play = function () {
+        var result;
+        try {
+          result = rawPlay.apply(this, arguments);
+        } catch (error) {
+          // Some implementations throw synchronously instead of rejecting.
+          var thrown = noteAudioFailure(error && error.name);
+          return thrown >= MAX_AUDIO_RETRIES
+            ? Promise.resolve()
+            : Promise.reject(blockedAudioError(error && error.name));
+        }
+        if (!result || typeof result.then !== 'function') {
+          // Pre-promise implementation: it signals failure by throwing above,
+          // so getting here at all means the element started.
+          self.__hkAudioFails = 0;
+          return result === undefined ? Promise.resolve() : result;
+        }
+        return result.then(function () {
+          self.__hkAudioFails = 0;
+        }, function (error) {
+          var name = error && error.name;
+          // Unity already handles NotAllowedError correctly, so leave that
+          // one exactly as it was and only relabel the rest.
+          if (name === 'NotAllowedError') throw error;
+          var fails = noteAudioFailure(name);
+          // After enough consecutive failures stop rejecting altogether: this
+          // element is never going to play, and every rejection re-queues it
+          // on the next tap forever.
+          if (fails >= MAX_AUDIO_RETRIES) return undefined;
+          throw blockedAudioError(name);
+        });
+      };
+    }
+
+    // resume() is refused for the same gesture reason, and nothing on the page
+    // can act on that refusal, so it must never become an unhandled rejection.
+    var ctxProto =
+      (typeof BaseAudioContext !== 'undefined' && BaseAudioContext.prototype) ||
+      (typeof AudioContext !== 'undefined' && AudioContext.prototype) ||
+      (typeof webkitAudioContext !== 'undefined' && webkitAudioContext.prototype) || null;
+    if (ctxProto && !self.__hkResumePatched && typeof ctxProto.resume === 'function') {
+      self.__hkResumePatched = true;
+      var rawResume = ctxProto.resume;
+      ctxProto.resume = function () {
+        var result;
+        try {
+          result = rawResume.apply(this, arguments);
+        } catch (error) {
+          log('audio guard: resume() threw ' + ((error && error.name) || 'an error') + ' — ignored');
+          return Promise.resolve();
+        }
+        if (result && typeof result.then === 'function') {
+          return result.catch(function (error) {
+            log('audio guard: resume() refused (' + ((error && error.name) || 'unknown') +
+                ') — waiting for a gesture');
+            return undefined;
+          });
+        }
+        return result === undefined ? Promise.resolve() : result;
+      };
+    }
+  }
+
+  // A tiny silent WAV assembled in memory: 8 kHz, 8-bit, mono, a tenth of a
+  // second. Playing it inside a real gesture is what unlocks every other
+  // media element for the rest of the session on iOS, and building it here
+  // means no network request and nothing that can fail to load.
+  function silentWavUrl() {
+    var SAMPLES = 800;
+    var bytes = new Uint8Array(44 + SAMPLES);
+    var view = new DataView(bytes.buffer);
+    function ascii(offset, text) {
+      for (var i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+    }
+    ascii(0, 'RIFF');
+    view.setUint32(4, 36 + SAMPLES, true);   // file size minus the 8-byte header
+    ascii(8, 'WAVE');
+    ascii(12, 'fmt ');
+    view.setUint32(16, 16, true);            // fmt chunk size
+    view.setUint16(20, 1, true);             // uncompressed PCM
+    view.setUint16(22, 1, true);             // one channel
+    view.setUint32(24, 8000, true);          // sample rate
+    view.setUint32(28, 8000, true);          // bytes per second
+    view.setUint16(32, 1, true);             // block align
+    view.setUint16(34, 8, true);             // bits per sample
+    ascii(36, 'data');
+    view.setUint32(40, SAMPLES, true);
+    // 8-bit PCM is unsigned, so silence is the midpoint, not zero.
+    for (var i = 0; i < SAMPLES; i++) view.setUint8(44 + i, 128);
+    try {
+      if (typeof Blob !== 'function' || typeof URL === 'undefined' ||
+          typeof URL.createObjectURL !== 'function') return null;
+      return URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  var playbackPrimed = false;
+  function primeMediaPlayback() {
+    if (playbackPrimed) return;
+    playbackPrimed = true;
+    var url = null;
+    try { url = silentWavUrl(); } catch (e) { url = null; }
+    if (!url) return;
+    var element = null;
+    try {
+      element = (typeof Audio === 'function') ? new Audio(url) : document.createElement('audio');
+      if (element && element.src !== url) element.src = url;
+    } catch (e) { element = null; }
+    if (!element) {
+      try { URL.revokeObjectURL(url); } catch (e2) {}
+      return;
+    }
+    try { element.volume = 0; } catch (e) {}
+    try {
+      var started = element.play();
+      if (started && typeof started.catch === 'function') started.catch(function () {});
+      log('media playback unlocked from a user gesture');
+    } catch (e) {
+      log('could not prime media playback: ' + ((e && e.message) || e));
+    }
+    setTimeout(function () {
+      try { element.pause(); } catch (e) {}
+      try { URL.revokeObjectURL(url); } catch (e) {}
+    }, 600);
+  }
+
+  /* ---------------------------------------------------------------- *
    * Audio unlock (iOS refuses to start audio without a user gesture)
    * ---------------------------------------------------------------- */
   function installAudioUnlock() {
@@ -385,6 +554,10 @@
       try { window[name] = Wrapped; } catch (e) {}
     });
     var unlock = function () {
+      // This handler only runs from a real gesture, which is the one moment
+      // iOS allows media to start — so spend it on the silent WAV as well as
+      // on the audio contexts.
+      primeMediaPlayback();
       contexts.forEach(function (ctx) {
         try { if (ctx.state === 'suspended') ctx.resume(); } catch (e) {}
       });
@@ -445,17 +618,23 @@
   var wrap = $('canvas-wrap');
 
   var PRESETS = [
-    { id: 'high',     label: 'High',     scale: 1.00, fps: 60 },
-    { id: 'balanced', label: 'Balanced', scale: 0.85, fps: 60 },
-    { id: 'smooth',   label: 'Smooth',   scale: 0.70, fps: 45 },
-    { id: 'low',      label: 'Low',      scale: 0.55, fps: 30 },
-    { id: 'potato',   label: 'Potato',   scale: 0.40, fps: 30 },
+    { id: 'high',        label: 'High',        scale: 1.00, fps: 60 },
+    { id: 'balanced',    label: 'Balanced',    scale: 0.85, fps: 60 },
+    { id: 'smooth',      label: 'Smooth',      scale: 0.70, fps: 45 },
+    { id: 'low',         label: 'Low',         scale: 0.55, fps: 30 },
+    { id: 'potato',      label: 'Potato',      scale: 0.40, fps: 30 },
+    { id: 'minimum',     label: 'Minimum',     scale: 0.30, fps: 30 },
+    { id: 'rock_bottom', label: 'Rock bottom', scale: 0.25, fps: 24 },
   ];
-  var QUALITIES = [1, 0.85, 0.7, 0.55, 0.4];
-  var FPS_CAPS = [0, 60, 45, 30];           // 0 = as fast as the display goes
+  var QUALITIES = [1, 0.85, 0.7, 0.55, 0.4, 0.3, 0.25];
+  var FPS_CAPS = [0, 60, 45, 30, 24, 20];   // 0 = as fast as the display goes
+  // The bottom of the ladder. Below this the picture stops being a game and
+  // starts being a slideshow of very large blocks.
+  var MIN_SCALE = 0.25;
   var PERF_KEY = 'hk.perf';
   var HEARTBEAT_KEY = 'hk.heartbeat';
   var STREAK_KEY = 'hk.crashStreak';
+  var CRASH_HEAP_KEY = 'hk.crashHeap';
 
   function nowMs() {
     return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -484,7 +663,7 @@
     var index = defaultPresetIndex();
     if (saved && typeof saved === 'object') {
       if (saved.preset >= 0 && saved.preset < PRESETS.length) index = saved.preset | 0;
-      if (typeof saved.scale === 'number' && saved.scale >= 0.25 && saved.scale <= 1) perf.scale = saved.scale;
+      if (typeof saved.scale === 'number' && saved.scale >= MIN_SCALE && saved.scale <= 1) perf.scale = saved.scale;
       if (typeof saved.fps === 'number' && saved.fps >= 0) perf.fps = saved.fps;
       if (typeof saved.auto === 'boolean') perf.auto = saved.auto;
     } else {
@@ -510,7 +689,7 @@
     var byFps = parseFloat(params.get('fps'));
     if (!isNaN(byFps) && byFps >= 0) perf.fps = byFps;
     var byScale = parseFloat(params.get('scale'));
-    if (!isNaN(byScale) && byScale >= 0.25 && byScale <= 1) perf.scale = byScale;
+    if (!isNaN(byScale) && byScale >= MIN_SCALE && byScale <= 1) perf.scale = byScale;
     if (params.get('auto') === '0' || params.get('auto') === 'off') perf.auto = false;
     if (params.get('auto') === '1' || params.get('auto') === 'on') perf.auto = true;
   }
@@ -537,8 +716,8 @@
   }
   function applyResolution() {
     var q = perf.scale;
-    var w = Math.max(320, Math.round((window.innerWidth || 1024) * q));
-    var h = Math.max(240, Math.round((window.innerHeight || 768) * q));
+    var w = Math.max(160, Math.round((window.innerWidth || 1024) * q));
+    var h = Math.max(120, Math.round((window.innerHeight || 768) * q));
     setCanvasCss(w, h, q);
     if (!unityInstance) {
       // Unity has not taken the canvas over yet; set the size directly.
@@ -687,12 +866,20 @@
       perf.scale = next.scale;
       perf.fps = next.fps;
       perf.crashSteps = 0;              // the lower level is now the setting
-    } else if (perf.fps > 30) {
+    } else if (perf.fps === 0 || perf.fps > 30) {
+      // Past the last preset there is nothing left to trade but the frame
+      // rate, and that is the cheaper thing to give up: an uncapped loop on a
+      // 120 Hz iPad is doing twice the work for nothing, so cap it first and
+      // then walk the cap down before touching the picture.
       perf.fps = 30;
-    } else if (perf.scale > 0.4) {
-      perf.scale = Math.max(0.4, Math.round((perf.scale - 0.15) * 100) / 100);
+    } else if (perf.fps > 24) {
+      perf.fps = 24;
+    } else if (perf.fps > 20) {
+      perf.fps = 20;
+    } else if (perf.scale > MIN_SCALE) {
+      perf.scale = Math.max(MIN_SCALE, Math.round((perf.scale - 0.10) * 100) / 100);
     } else {
-      return false;
+      return false;                     // already at the bottom of the ladder
     }
     savePerf();
     applyPerf(reason);
@@ -724,6 +911,10 @@
     lastFps = frames > 0 ? frames * 1000 / elapsed : 0;
     var text = Math.round(lastFps) + ' fps';
     if (frameInterval > 0) text += ' · cap ' + perf.fps;
+    // The chip is the only thing on screen while playing, so once the heap is
+    // big enough to matter, show it there rather than hiding it in the menu.
+    var chipHeap = heapMB();
+    if (chipHeap !== null && chipHeap > 1000) text += ' · ' + (chipHeap / 1024).toFixed(2) + ' GB heap';
     fpsEl.textContent = text;
     fpsEl.style.color = lastFps > 50 ? '#9dffb0' : lastFps > 30 ? '#ffd479' : '#ff9d9d';
     considerAutoDegrade(lastFps, now);
@@ -740,6 +931,10 @@
    * ---------------------------------------------------------------- */
   var sessionStart = 0;
   var heartbeatTimer = 0;
+
+  // The game data itself: 884 MB on disk, and the same 884 MB again inside
+  // the wasm heap once Unity has copied it in.
+  var DATA_MB = 884;
 
   // Size of the wasm heap: the 884 MB game data plus everything the running
   // game allocates. iPadOS kills a tab long before the 2 GB this heap is
@@ -759,14 +954,51 @@
     } catch (e) {}
     return null;
   }
-  var heapWarned = false;
+  /* ---------------------------------------------------------------- *
+   * Memory limits learned from the last crash
+   * --------------------------------------------------------------------
+   * A fixed threshold cannot be right for every iPad: how much one tab gets
+   * depends on the device, on iPadOS's mood and on what else is open. So
+   * when a session is killed while playing, the heap size it died at is
+   * written to localStorage, and the next session warns relative to *that*
+   * number instead of a guess. 80 % of it is the "get ready" point and 95 %
+   * is the "stop now" point. With nothing recorded yet the defaults are
+   * deliberately early: it is far cheaper to be told to reload at a bench
+   * than to be killed mid-fight.
+   * ---------------------------------------------------------------- */
+  function crashHeapMB() {
+    var value = parseInt(readStore(CRASH_HEAP_KEY) || '', 10);
+    return isFinite(value) && value > 0 ? value : null;
+  }
+  function memoryLimits() {
+    var died = crashHeapMB();
+    if (died) {
+      return {
+        warn: Math.round(died * 0.80),
+        alarm: Math.round(died * 0.95),
+        crashHeap: died,
+        learned: true,
+      };
+    }
+    return { warn: 1000, alarm: 1400, crashHeap: null, learned: false };
+  }
+
+  var heapWarnLevel = 0;                 // 0 = nothing said, 1 = warned, 2 = alarmed
   function checkMemory() {
     if (!booted) return;
     var heap = heapMB();
-    if (heap === null || heapWarned) return;
-    if (heap > 1600) {
-      heapWarned = true;
-      log('memory warning: the game heap is ' + heap + ' MB');
+    if (heap === null) return;
+    var limits = memoryLimits();
+    if (heap >= limits.alarm && heapWarnLevel < 2) {
+      heapWarnLevel = 2;
+      log('memory alarm: the game heap is ' + heap + ' MB' +
+          (limits.learned ? ', last crash was at ' + limits.crashHeap + ' MB' : ''));
+      toast('The game now holds ' + heap + ' MB — iPadOS is about to kill this tab. ' +
+        'Rest at a bench and reload now; that keeps your progress and starts the heap fresh.', 12000);
+    } else if (heap >= limits.warn && heapWarnLevel < 1) {
+      heapWarnLevel = 1;
+      log('memory warning: the game heap is ' + heap + ' MB' +
+          (limits.learned ? ', last crash was at ' + limits.crashHeap + ' MB' : ''));
       toast('The game now holds ' + heap + ' MB — iPadOS may kill the tab soon. ' +
         'Resting at a bench and reloading starts it fresh.', 9000);
     }
@@ -792,7 +1024,11 @@
   function markCleanExit() {
     clearInterval(heartbeatTimer);
     writeStore(HEARTBEAT_KEY, null);
-    writeStore(STREAK_KEY, '0');
+    // Only a session that really got the game running is allowed to clear the
+    // crash streak. Safari reloads the page by itself after a kill, and that
+    // fresh, never-booted page also fires pagehide — it used to wipe the
+    // streak before the ladder had climbed anywhere.
+    if (booted) writeStore(STREAK_KEY, '0');
   }
 
   function evaluateLastSession() {
@@ -806,6 +1042,9 @@
     // A tab killed in the background is normal on iPadOS — it says nothing
     // about the graphics level, so it does not count.
     var killedWhilePlaying = hb.visible !== false;
+    // Remember how big the heap was when the tab died, so the next session
+    // warns against this device's real ceiling instead of a guess.
+    if (killedWhilePlaying && hb.heap > 0) writeStore(CRASH_HEAP_KEY, String(Math.round(hb.heap)));
     var streak = parseInt(readStore(STREAK_KEY) || '0', 10) || 0;
     streak = killedWhilePlaying ? Math.min(PRESETS.length - 1, streak + 1) : 0;
     writeStore(STREAK_KEY, String(streak));
@@ -903,8 +1142,15 @@
     rows.push(['frame rate', Math.round(lastFps) + ' fps' + (perf.fps > 0 ? ', capped at ' + perf.fps : ', uncapped')]);
     rows.push(['auto-degrade', perf.auto ? 'on — lowers the graphics if the frame rate stays low' : 'off']);
     var heap = heapMB();
+    var limits = memoryLimits();
     rows.push(['game memory (wasm heap)', heap === null ? 'not reported' : heap + ' MB']);
-    if (heap !== null && heap > 1500) {
+    if (heap !== null) {
+      rows.push(['tab total (heap + game data)', (heap + DATA_MB) + ' MB']);
+    }
+    rows.push(['last crash at', limits.crashHeap
+      ? limits.crashHeap + ' MB heap — warnings now start at ' + limits.warn + ' MB'
+      : 'nothing recorded']);
+    if (heap !== null && heap >= limits.warn) {
       rows.push(['memory warning', 'close to what iPadOS gives one tab — a lower render scale helps']);
     }
     var gpu = gpuName();
@@ -929,7 +1175,9 @@
     presets: function () { return PRESETS.map(function (p) { return p.id; }); },
     lastSession: function () { return lastSessionInfo; },
     heapMB: heapMB,
+    memoryLimits: memoryLimits,
     checkMemory: checkMemory,
+    refreshPerfRows: refreshPerfRows,
     apply: applyPerf,
     degrade: function () { return degradeStep('manual'); },
     // Test hook: run one auto-degrade decision with the cooldowns cleared
@@ -1866,6 +2114,9 @@
    * Boot
    * ---------------------------------------------------------------- */
   (function init() {
+    // Before anything can create a media element or an audio context: the
+    // Unity framework loads later and its first play() must already be guarded.
+    installAudioGuards();
     loadPerf();
     evaluateLastSession();
     installFrameLimiter();
